@@ -115,7 +115,10 @@ class SongsMenuPluginHandler(PluginHandler):
 
         Used by ExFalso's file-list context menu (outside SongsMenu).
         """
-        parent_getter = lambda: get_top_parent(parent)
+
+        def parent_getter():
+            return get_top_parent(parent)
+
         actions = Gio.SimpleActionGroup()
         item = self.build_menu_item(library, songs, actions, "plugins", parent_getter)
         if item is None:

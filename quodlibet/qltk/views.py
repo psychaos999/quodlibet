@@ -1045,6 +1045,7 @@ class _TreeViewColumnLabel(Gtk.Label):
         snapshot.pop()
         Gtk.Label.do_snapshot(self, snapshot)
         snapshot.pop()
+        return None
 
 
 class TreeViewColumn(Gtk.TreeViewColumn):

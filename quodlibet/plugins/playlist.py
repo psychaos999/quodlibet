@@ -153,7 +153,7 @@ class PlaylistPluginHandler(PluginHandler):
         # Legacy widget-menu path (still used if a non-Gio menu is passed)
         if hasattr(menu, "append") and not hasattr(menu, "get_menu_model"):
             menu.append(SeparatorMenuItem())
-            for item in specs:
+            for _item in specs:
                 # can't place MenuItemSpec on a widget menu; skip
                 pass
             attrs = ["plugin_playlist", "plugin_playlists"]
