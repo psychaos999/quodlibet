@@ -43,6 +43,7 @@ jobs:
             mingw-w64-clang-x86_64-gdk-pixbuf2
             mingw-w64-clang-x86_64-librsvg
             mingw-w64-clang-x86_64-gtk4
+            mingw-w64-clang-x86_64-libadwaita
             mingw-w64-clang-x86_64-libsoup3
             mingw-w64-clang-x86_64-gstreamer
             mingw-w64-clang-x86_64-gst-plugins-base
@@ -122,9 +123,11 @@ jobs:
             gir1.2-gst-plugins-base-1.0 \
             gir1.2-gstreamer-1.0 \
             gir1.2-gtk-4.0 \
+            gir1.2-adw-1 \
             gir1.2-gtksource-4 \
             gir1.2-keybinder-3.0 \
             gir1.2-soup-3.0 \
+            libadwaita-1-0 \
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
@@ -170,7 +173,9 @@ jobs:
             gettext \
             gir1.2-gst-plugins-base-1.0 \
             gir1.2-gtk-4.0 \
+            gir1.2-adw-1 \
             gir1.2-soup-3.0 \
+            libadwaita-1-0 \
             gstreamer1.0-plugins-good \
             libcairo2-dev \
             libgirepository-2.0-dev \
