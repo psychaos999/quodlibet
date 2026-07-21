@@ -105,7 +105,7 @@ class FingerprintDialog(Window):
         for song in songs:
             pool.push(song)
 
-        connect_obj(self, "delete-event", self.__cancel_cb, pool)
+        connect_obj(self, "close-request", self.__cancel_cb, pool)
 
         self.add(outer_box)
         self.show_all()

@@ -33,7 +33,7 @@ from quodlibet.qltk.songsmenu import SongsMenu
 from quodlibet.qltk.views import AllTreeView
 from quodlibet.qltk import Icons, get_children
 from quodlibet.util import connect_obj, print_w
-from quodlibet.qltk.x import ScrolledWindow, Align, Button, MenuItem
+from quodlibet.qltk.x import ScrolledWindow, Align, Button
 from quodlibet.util.path import uri_is_valid
 from quodlibet.util.picklehelper import pickle_load, pickle_dump, PickleError
 
@@ -474,33 +474,14 @@ class Podcasts(Browser):
 
     def _popup_menu(self, view: Gtk.Widget) -> Gtk.PopoverMenu | None:
         model, paths = self._view.get_selection().get_selected_rows()
-        menu = Gtk.PopoverMenu()
-        refresh = MenuItem(
-            _("_Refresh"),
-            Icons.VIEW_REFRESH,
-            tooltip=_("Search source for new episodes"),
+        feeds = [model[p][0] for p in paths]
+        menu = qltk.gio_action_popover(
+            [
+                (_("_Refresh"), lambda: self.__refresh(feeds)),
+                (_("_Rebuild"), lambda: self.__rebuild(feeds)),
+                (_("_Delete"), lambda: self.__remove_paths(model, paths)),
+            ]
         )
-        rebuild = MenuItem(
-            _("_Rebuild"),
-            Icons.EDIT_FIND_REPLACE,
-            tooltip=_("Remove all existing episodes then reload from source"),
-        )
-        delete = MenuItem(
-            _("_Delete"),
-            Icons.EDIT_DELETE,
-            tooltip=_("Remove this podcast and its episodes"),
-        )
-
-        connect_obj(refresh, "activate", self.__refresh, [model[p][0] for p in paths])
-        connect_obj(rebuild, "activate", self.__rebuild, [model[p][0] for p in paths])
-        connect_obj(delete, "activate", self.__remove_paths, model, paths)
-
-        menu.append(refresh)
-        menu.append(rebuild)
-        menu.append(delete)
-        menu.show_all()
-        menu.connect("selection-done", lambda m: m.destroy())
-
         if self._view.popup_menu(menu, 0, GLib.CURRENT_TIME):
             return menu
         return None

@@ -1187,7 +1187,8 @@ class SongList(AllTreeView, SongListDnDMixin, DragScroll, util.InstanceTracker):
                 self.toggle_column_sort(column, replace=not ctrl_held)
 
             column.connect("clicked", column_clicked)
-            column.connect("button-press-event", self.__showmenu)
+            # Column header context menu via popup-menu (keyboard +
+            # TreeViewColumnButton already handles right-click via GestureClick)
             column.connect("popup-menu", self.__showmenu)
             column.connect("notify::width", self.__column_width_changed)
             column.set_reorderable(True)

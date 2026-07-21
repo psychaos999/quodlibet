@@ -17,7 +17,7 @@ import gi
 
 gi.require_version("PangoCairo", "1.0")
 
-from gi.repository import Gtk, GObject, GLib
+from gi.repository import Gtk, GObject, GLib, Graphene
 from gi.repository import Gdk
 from gi.repository import Pango, PangoCairo
 import cairo
@@ -26,6 +26,45 @@ from quodlibet.qltk.image import get_surface_for_pixbuf, get_surface_extents
 from quodlibet import qltk
 from quodlibet import app
 from quodlibet import pattern
+
+
+def _monitor_geometry(index: int) -> Gdk.Rectangle:
+    display = Gdk.Display.get_default()
+    monitors = display.get_monitors()
+    n = monitors.get_n_items()
+    if n <= 0:
+        geo = Gdk.Rectangle()
+        geo.x = geo.y = 0
+        geo.width, geo.height = 1920, 1080
+        return geo
+    mon = monitors.get_item(max(0, min(index, n - 1)))
+    return mon.get_geometry()
+
+
+def _move_window(window: Gtk.Window, x: int, y: int) -> None:
+    """Best-effort absolute positioning (GTK4 has no Window.move)."""
+    surface = window.get_surface()
+    if surface is None:
+        return
+    try:
+        from gi.repository import GdkX11
+    except ImportError:
+        return
+    if not isinstance(surface, GdkX11.X11Surface):
+        return
+    try:
+        import ctypes
+
+        xlib = ctypes.CDLL("libX11.so.6")
+        display = surface.get_display()
+        if not isinstance(display, GdkX11.X11Display):
+            return
+        xdisplay = display.get_xdisplay()
+        xid = surface.get_xid()
+        xlib.XMoveWindow(ctypes.c_void_p(xdisplay), ctypes.c_ulong(xid), int(x), int(y))
+        xlib.XFlush(ctypes.c_void_p(xdisplay))
+    except Exception:
+        pass
 
 
 class OSDWindow(Gtk.Window):
@@ -46,20 +85,25 @@ class OSDWindow(Gtk.Window):
     """wait this many milliseconds between steps"""
 
     def __init__(self, conf, song):
-        Gtk.Window.__init__(self, type=Gtk.WindowType.POPUP)
-        self.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
-
-        screen = self.get_screen()
-        rgba = screen.get_rgba_visual()
-        if rgba is not None:
-            self.set_visual(rgba)
+        super().__init__()
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.set_can_focus(False)
+        # Notification-like: do not take focus or stay in task switcher.
+        try:
+            self.set_focusable(False)
+        except Exception:
+            pass
 
         self.conf = conf
         self.iteration_source = None
         self.fading_in = False
         self.fade_start_time = 0
+        self._winw = 0
+        self._winh = 0
+        self._pos = (0, 0)
 
-        mgeo = screen.get_monitor_geometry(conf.monitor)
+        mgeo = _monitor_geometry(conf.monitor)
         textwidth = mgeo.width - 2 * (self.BORDER + self.MARGIN)
 
         scale_factor = self.get_scale_factor()
@@ -99,6 +143,7 @@ class OSDWindow(Gtk.Window):
         if coverwidth:
             winw += coverwidth + self.BORDER
         winh = max(coverheight, layoutsize[1]) + 2 * self.BORDER
+        self._winw, self._winh = winw, winh
         self.set_default_size(winw, winh)
 
         rect = namedtuple("Rect", ["x", "y", "width", "height"])
@@ -106,56 +151,43 @@ class OSDWindow(Gtk.Window):
         rect.y = (winh - coverheight) // 2
         rect.width = coverwidth
         rect.height = coverheight
-
         self.cover_rectangle = rect
 
         winx = int((mgeo.width - winw) * conf.pos_x)
         winx = max(self.MARGIN, min(mgeo.width - self.MARGIN - winw, winx))
         winy = int((mgeo.height - winh) * conf.pos_y)
         winy = max(self.MARGIN, min(mgeo.height - self.MARGIN - winh, winy))
-        self.move(winx + mgeo.x, winy + mgeo.y)
+        self._pos = (winx + mgeo.x, winy + mgeo.y)
 
-    def do_draw(self, cr):
-        if self.is_composited():
-            self.draw_title_info(cr)
-        else:
-            # manual transparency rendering follows
-            walloc = self.get_allocation()
-            wpos = self.get_position()
+        self.connect("realize", self.__on_realize)
+        self.connect("map", self.__on_map)
 
-            if not getattr(self, "_bg_sf", None):
-                # copy the root surface into a temp image surface
-                root_win = self.get_root_window()
-                bg_sf = cairo.ImageSurface(
-                    cairo.FORMAT_ARGB32, walloc.width, walloc.height
-                )
-                pb = Gdk.pixbuf_get_from_window(
-                    root_win, wpos[0], wpos[1], walloc.width, walloc.height
-                )
-                bg_cr = cairo.Context(bg_sf)
-                Gdk.cairo_set_source_pixbuf(bg_cr, pb, 0, 0)
-                bg_cr.paint()
-                self._bg_sf = bg_sf
+        qltk.add_css(
+            self,
+            """
+            window {
+                background-color: transparent;
+            }
+            """,
+        )
 
-            if not getattr(self, "_fg_sf", None):
-                # draw the window content in another temp surface
-                fg_sf = cairo.ImageSurface(
-                    cairo.FORMAT_ARGB32, walloc.width, walloc.height
-                )
-                fg_cr = cairo.Context(fg_sf)
-                fg_cr.set_source_surface(fg_sf)
-                self.draw_title_info(fg_cr)
-                self._fg_sf = fg_sf
+    def __on_realize(self, *_args):
+        _move_window(self, *self._pos)
 
-            # first draw the background so we have 'transparancy'
-            cr.set_operator(cairo.OPERATOR_SOURCE)
-            cr.set_source_surface(self._bg_sf)
-            cr.paint()
+    def __on_map(self, *_args):
+        _move_window(self, *self._pos)
 
-            # then draw the window content with the right opacity
-            cr.set_operator(cairo.OPERATOR_OVER)
-            cr.set_source_surface(self._fg_sf)
-            cr.paint_with_alpha(self.get_opacity())
+    def get_osd_size(self):
+        return self._winw, self._winh
+
+    def do_snapshot(self, snapshot):
+        width = self.get_width() or self._winw
+        height = self.get_height() or self._winh
+        if width <= 0 or height <= 0:
+            return
+        rect = Graphene.Rect().init(0, 0, float(width), float(height))
+        cr = snapshot.append_cairo(rect)
+        self.draw_title_info(cr)
 
     @staticmethod
     def rounded_rectangle(cr, x, y, radius, width, height):
@@ -200,21 +232,12 @@ class OSDWindow(Gtk.Window):
         cr.save()
         do_shadow = self.conf.shadow[0] != -1.0
         do_outline = self.conf.outline[0] != -1.0
-
-        self.set_name("osd_bubble")
-        qltk.add_css(
-            self,
-            """
-            #osd_bubble {
-                background-color:rgba(0,0,0,0);
-            }
-        """,
-        )
+        winw, winh = self.get_osd_size()
 
         cr.set_operator(cairo.OPERATOR_OVER)
         cr.set_source_rgba(*self.conf.fill)
-        radius = min(25, self.corners_factor * min(*self.get_size()))
-        self.draw_conf_rect(cr, 0, 0, self.get_size()[0], self.get_size()[1], radius)
+        radius = min(25, self.corners_factor * min(winw, winh))
+        self.draw_conf_rect(cr, 0, 0, winw, winh, radius)
         cr.fill()
 
         # draw border
@@ -223,9 +246,7 @@ class OSDWindow(Gtk.Window):
             f = self.conf.fill
             rgba = (f[0] / 1.25, f[1] / 1.25, f[2] / 1.25, f[3] / 2.0)
             cr.set_source_rgba(*rgba)
-            self.draw_conf_rect(
-                cr, 1, 1, self.get_size()[0] - 2, self.get_size()[1] - 2, radius
-            )
+            self.draw_conf_rect(cr, 1, 1, winw - 2, winh - 2, radius)
             cr.set_line_width(2.0)
             cr.stroke()
 
@@ -279,7 +300,7 @@ class OSDWindow(Gtk.Window):
 
         PangoCairo.update_layout(cr, self.title_layout)
         height = self.title_layout.get_pixel_size()[1]
-        texty = (self.get_size()[1] - height) // 2
+        texty = (winh - height) // 2
 
         if do_shadow:
             cr.set_source_rgba(*self.conf.shadow)
@@ -321,12 +342,9 @@ class OSDWindow(Gtk.Window):
         fraction = delta / self.FADETIME
 
         if self.fading_in:
-            self.set_opacity(fraction)
+            self.set_opacity(min(1.0, fraction))
         else:
-            self.set_opacity(1.0 - fraction)
-
-        if not self.is_composited():
-            self.queue_draw()
+            self.set_opacity(max(0.0, 1.0 - fraction))
 
         if fraction >= 1.0:
             self.iteration_source = None

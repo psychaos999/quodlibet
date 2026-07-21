@@ -329,7 +329,12 @@ def _main_setup_osx(window):
 
     # QL shouldn't exit on window close, EF should
     if window.get_is_persistent():
-        window.connect("delete-event", lambda window, event: window.hide() or True)
+
+        def _on_close_request(window):
+            window.hide()
+            return True  # stop default destroy
+
+        window.connect("close-request", _on_close_request)
 
 
 def run(window, before_quit=None):

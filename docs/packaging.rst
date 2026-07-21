@@ -28,11 +28,12 @@ Mandatory Runtime Dependencies
 
 The following software is needed to start Ex Falso or Quod Libet.
 
-* **Python** (>= 3.8)
+* **Python** (>= 3.10)
 * **PyGObject** including **cairo support** (>= 3.18)
 * **pycairo** (>= 1.8)
 * **mutagen** (>= 1.34)
-* **GTK+** (>= 3.18)
+* **GTK** (>= 4.10)
+* **libadwaita** (>= 1.4) + **gir1.2-adw-1**
 * **libsoup** (>= 3.0)
 * **gir1.2-soup-3.0**
 * On OS X only: **PyObjC**
@@ -72,7 +73,7 @@ Optional Runtime Dependencies
 **libkeybinder-3.0** + **typelib**:
     * Multimedia key support under non Gnome setups
 
-**libgtksourceview-4** + **typelib**:
+**libgtksourceview-5** + **typelib**:
     * Undo/Redo support for multiline text fields
 
 **libmodplug1**:

@@ -10,7 +10,7 @@
 # the Free Software Foundation; either version 2 of the License, or
 # (at your option) any later version.
 
-from gi.repository import Gtk, Gio
+from gi.repository import Gtk, Gio, Adw
 
 from quodlibet import config
 from quodlibet import qltk
@@ -26,10 +26,10 @@ from quodlibet.query._query import Query
 from quodlibet.qltk.scanbox import ScanBox
 from quodlibet.qltk.maskedbox import MaskedBox
 from quodlibet.qltk.songlist import SongList, get_columns
-from quodlibet.qltk.window import UniqueWindow
+from quodlibet.qltk.window import _Unique, PersistentWindowMixin
 from quodlibet.qltk.x import Button, Align
 from quodlibet.qltk.advanced_prefs import AdvancedPreferencesPane
-from quodlibet.qltk import Icons, add_css
+from quodlibet.qltk import Icons
 from quodlibet.util import copool, format_time_preferred
 from quodlibet.util.dprint import print_d
 from quodlibet.util.library import emit_signal, get_scan_dirs, scan_library
@@ -40,9 +40,17 @@ MARGIN = 12
 TOP_MARGIN = 3
 
 
-class PreferencesWindow(UniqueWindow):
-    """The tabbed container window for the main preferences GUI.
-    Individual tabs are encapsulated as inner classes inheriting from `Box`"""
+def _prefs_title(title: str) -> str:
+    """Strip menu mnemonics for Adw sidebar/page titles."""
+    return title.replace("_", "") if title else title
+
+
+class PreferencesWindow(_Unique, Adw.PreferencesWindow, PersistentWindowMixin):
+    """Main preferences UI as an ``Adw.PreferencesWindow``.
+
+    Individual pages remain Gtk.Box subclasses (feature parity with existing
+    controls); each is hosted in an ``Adw.PreferencesPage`` + group.
+    """
 
     class SongList(Gtk.Box):
         name = "songlist"
@@ -874,74 +882,82 @@ class PreferencesWindow(UniqueWindow):
     def __init__(self, parent, open_page=None, all_pages=True):
         if self.is_not_unique():
             return
-        super().__init__()
+        # Capture before super(): destroy handlers can run during/after construction
         self.current_scan_dirs = get_scan_dirs()
+        super().__init__()
         self.set_title(_("Preferences"))
         self.set_resizable(True)
+        self.set_default_size(720, 560)
+        self.set_search_enabled(False)
         self.set_transient_for(qltk.get_top_parent(parent))
 
-        self.__notebook = notebook = qltk.Notebook()
-        pages = [self.Tagging]
+        page_types = [self.Tagging]
         if all_pages:
-            pages = (
+            page_types = (
                 [self.SongList, self.Browsers, self.Player, self.Library]
-                + pages
+                + page_types
                 + [self.Advanced]
             )
-        for Page in pages:
-            page = Page()
-            page.show()
-            notebook.append_page(page)
-        if len(pages) > 1:
-            add_css(notebook, "tab { padding: 6px 24px } ")
-        else:
-            notebook.set_show_tabs(False)
 
-        if open_page in [page.name for page in pages]:
+        # content widgets keyed by page name (for tests / callers)
+        self.__contents: list[Gtk.Widget] = []
+        self.__adw_pages: list[Adw.PreferencesPage] = []
+        for Page in page_types:
+            content = Page()
+            content.set_hexpand(True)
+            content.set_vexpand(True)
+            content.show()
+            adw_page = Adw.PreferencesPage(
+                title=_prefs_title(getattr(content, "title", content.name)),
+                name=content.name,
+            )
+            group = Adw.PreferencesGroup()
+            group.add(content)
+            adw_page.add(group)
+            self.add(adw_page)
+            self.__contents.append(content)
+            self.__adw_pages.append(adw_page)
+
+        if open_page in [p.name for p in page_types]:
             self.set_page(open_page)
         else:
             page_name = config.get("memory", "prefs_page", "")
             self.set_page(page_name)
 
-        def on_switch_page(notebook, page, page_num):
-            config.set("memory", "prefs_page", page.name)
+        def on_visible_page(*_args):
+            name = self.get_visible_page_name()
+            if name:
+                config.set("memory", "prefs_page", name)
 
-        notebook.connect("switch-page", on_switch_page)
-
-        close = Button(_("_Close"), Icons.WINDOW_CLOSE)
-        connect_obj(close, "clicked", lambda x: x.destroy(), self)
-        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        button_box.set_layout(Gtk.ButtonBoxStyle.END)
-        button_box.append(close)
-
-        self.use_header_bar()
-        if self.has_close_button():
-            self.set_border_width(0)
-            notebook.set_show_border(False)
-            self.add(notebook)
-        else:
-            self.set_border_width(12)
-            vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-            vbox.append(notebook)
-            vbox.append(button_box)
-            self.add(vbox)
-
+        self.connect("notify::visible-page-name", on_visible_page)
         connect_obj(self, "destroy", PreferencesWindow.__destroy, self)
+        self.enable_window_tracking("prefs")
 
     def set_page(self, name):
-        notebook = self.__notebook
-        for p in range(notebook.get_n_pages()):
-            if notebook.get_nth_page(p).name == name:
-                notebook.set_current_page(p)
+        """Show the preferences page with the given ``name`` attribute."""
+        if not name:
+            return
+        for content in self.__contents:
+            if getattr(content, "name", None) == name:
+                self.set_visible_page_name(name)
+                return
+
+    def get_page_contents(self) -> list[Gtk.Widget]:
+        """Return the page content widgets (not the Adw page shells)."""
+        return list(self.__contents)
 
     def __destroy(self):
         config.save()
+        previous = getattr(self, "current_scan_dirs", None)
+        if previous is None:
+            return
         new_dirs = set(get_scan_dirs())
-        gone_dirs = set(self.current_scan_dirs) - new_dirs
-        if new_dirs - set(self.current_scan_dirs):
+        gone_dirs = set(previous) - new_dirs
+        if new_dirs - set(previous):
             print_d("Library paths have been added, re-scanning...")
-            scan_library(app.library, force=False)
-        elif gone_dirs:
+            if app.library is not None:
+                scan_library(app.library, force=False)
+        elif gone_dirs and app.librarian is not None:
             copool.add(app.librarian.remove_roots, gone_dirs)
 
 

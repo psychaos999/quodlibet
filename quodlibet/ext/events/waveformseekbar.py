@@ -15,7 +15,7 @@
 from functools import lru_cache
 from math import ceil, floor
 
-from gi.repository import Gtk, Gdk, Gst
+from gi.repository import Gtk, Gdk, Gst, Graphene
 import cairo
 
 from quodlibet import _, app
@@ -88,9 +88,12 @@ class WaveformSeekBar(Gtk.Box):
             child.show_all()
         self.set_time_label_visibility(CONFIG.show_time_labels)
 
-        self._waveform_scale.connect("size-allocate", self._update_redraw_interval)
-        self._waveform_scale.connect("motion-notify-event", self._on_mouse_hover)
-        self._waveform_scale.connect("leave-notify-event", self._on_mouse_leave)
+        self._waveform_scale.connect("notify::width", self._update_redraw_interval)
+        self._waveform_scale.connect("notify::height", self._update_redraw_interval)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self._on_mouse_hover_motion)
+        motion.connect("leave", self._on_mouse_leave_ctrl)
+        self._waveform_scale.add_controller(motion)
 
         self._label_tracker = TimeTracker(player)
         self._label_tracker.connect("tick", self._on_tick_label, player)
@@ -291,20 +294,20 @@ class WaveformSeekBar(Gtk.Box):
             self._rms_vals.clear()
             self._waveform_scale.queue_draw()
 
-    def _on_mouse_hover(self, _, event):
-        def clamp(a, x, b):
-            """Return x if a <= x <= b, else the a or b nearest to x."""
-            return min(max(x, a), b)
+    def _on_mouse_hover_motion(self, _ctrl, x, y):
+        def clamp(a, val, b):
+            """Return val if a <= val <= b, else the a or b nearest to val."""
+            return min(max(val, a), b)
 
-        width = self._waveform_scale.get_allocation().width
-        self._waveform_scale.set_mouse_x_position(clamp(0, event.x, width))
+        width = self._waveform_scale.get_width()
+        self._waveform_scale.set_mouse_x_position(clamp(0, x, width))
 
         self._waveform_scale.queue_draw()
 
         self._update_label(self._player)
         self._hovering = True
 
-    def _on_mouse_leave(self, _, event):
+    def _on_mouse_leave_ctrl(self, _ctrl):
         self._waveform_scale.set_mouse_x_position(-1)
         self._waveform_scale.queue_draw()
 
@@ -348,8 +351,18 @@ class WaveformScale(Gtk.Box):
 
         self.mouse_position = -1
         self._last_mouse_position = -1
-        self.add_events(Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.SCROLL_MASK)
         self._seeking = False
+
+        # GTK4: event controllers replace do_*_event vfuncs / add_events
+        click = Gtk.GestureClick()
+        click.set_button(Gdk.BUTTON_PRIMARY)
+        click.connect("pressed", self._on_click_pressed)
+        click.connect("released", self._on_click_released)
+        self.add_controller(click)
+
+        scroll = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.connect("scroll", self._on_scroll)
+        self.add_controller(scroll)
 
     @property
     def width(self):
@@ -522,22 +535,24 @@ class WaveformScale(Gtk.Box):
         height_px = int(height * pixel_ratio)
         return (height_px if height_px % 2 else height_px - 1) / pixel_ratio / 2
 
-    def do_draw(self, cr):
+    def do_snapshot(self, snapshot):
+        # GTK4: do_draw is never called — paint via snapshot + cairo
         context = self.get_style_context()
+        width = self.get_width()
+        height = self.get_height()
+        if width <= 0 or height <= 0:
+            return
 
-        # Get colors
+        rect = Graphene.Rect()
+        rect.init(0, 0, float(width), float(height))
+        cr = snapshot.append_cairo(rect)
+
         context.save()
         context.set_state(Gtk.StateFlags.NORMAL)
-        bg_color = context.get_background_color(context.get_state())
-        context.restore()
-
-        # Paint the background
-        cr.set_source_rgba(*list(bg_color))
+        # GTK4 StyleContext has no get_background_color; use transparent clear
+        cr.set_source_rgba(0, 0, 0, 0)
         cr.paint()
-
-        allocation = self.get_allocation()
-        width = allocation.width
-        height = allocation.height
+        context.restore()
 
         if self._rms_vals:
             self.draw_waveform(
@@ -551,6 +566,29 @@ class WaveformScale(Gtk.Box):
             )
         else:
             self.draw_placeholder(cr, width, height, self.remaining_color(context))
+
+    def _on_click_pressed(self, gesture, n_press, x, y):
+        if self._player:
+            self._seeking = True
+            self.queue_draw()
+
+    def _on_click_released(self, gesture, n_press, x, y):
+        if self._player and self.get_width() > 0:
+            ratio = x / self.get_width()
+            length = self._player.info("~#length") if self._player.info else 0
+            self._player.seek(ratio * length * 1000)
+            self._seeking = False
+            self.queue_draw()
+
+    def _on_scroll(self, controller, dx, dy):
+        if not self._player:
+            return False
+        if dy < 0:
+            self._player.seek(self._player.get_position() + CONFIG.seek_amount)
+        elif dy > 0:
+            self._player.seek(self._player.get_position() - CONFIG.seek_amount)
+        self.queue_draw()
+        return True
 
     @classmethod
     @lru_cache
@@ -594,31 +632,6 @@ class WaveformScale(Gtk.Box):
         default.alpha = 0.35
         return default
 
-    def do_button_press_event(self, event):
-        # Left mouse button
-        if event.button == 1 and self._player:
-            self._seeking = True
-            self.queue_draw()
-
-    def do_button_release_event(self, event):
-        # Left mouse button
-        if event.button == 1 and self._player:
-            ratio = event.x / self.get_allocation().width
-            length = self._player.info("~#length")
-            self._player.seek(ratio * length * 1000)
-            self._seeking = False
-            self.queue_draw()
-            return True
-        return None
-
-    def do_scroll_event(self, event):
-        if event.direction == Gdk.ScrollDirection.UP:
-            self._player.seek(self._player.get_position() + CONFIG.seek_amount)
-            self.queue_draw()
-        elif event.direction == Gdk.ScrollDirection.DOWN:
-            self._player.seek(self._player.get_position() - CONFIG.seek_amount)
-            self.queue_draw()
-
     def set_position(self, position):
         self.position = position
 
@@ -628,7 +641,8 @@ class WaveformScale(Gtk.Box):
 
     def get_mouse_position(self):
         """Return the position of the song pointed by the mouse in seconds"""
-        ratio = self.mouse_position / self.get_allocation().width
+        width = self.get_width() or 1
+        ratio = self.mouse_position / width
         length = self._player.info("~#length")
         return ratio * length
 

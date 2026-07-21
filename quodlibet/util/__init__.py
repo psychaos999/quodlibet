@@ -211,7 +211,8 @@ class OptionParser:
             print_e("\n".join(text))
             raise SystemExit(True) from e
         else:
-            transopts = {}
+            # values are option arguments (str) or True for flag-style options
+            transopts: dict[str, str | bool] = {}
             for o, a in opts:
                 if o.startswith("--"):
                     o = self.__translate_long.get(o[2:], o[2:])
@@ -404,18 +405,18 @@ def format_size(size):
     """
     # TODO: Better i18n of this (eg use O/KO/MO/GO in French)
     if size >= 1024**3:
-        return "%.1f GB" % (float(size) / (1024**3))
+        return f"{float(size) / (1024**3):.1f} GB"
     if size >= 1024**2 * 100:
-        return "%.0f MB" % (float(size) / (1024**2))
+        return f"{float(size) / (1024**2):.0f} MB"
     if size >= 1024**2 * 10:
-        return "%.1f MB" % (float(size) / (1024**2))
+        return f"{float(size) / (1024**2):.1f} MB"
     if size >= 1024**2:
-        return "%.2f MB" % (float(size) / (1024**2))
+        return f"{float(size) / (1024**2):.2f} MB"
     if size >= 1024 * 10:
-        return "%d KB" % int(size / 1024)
+        return f"{int(size / 1024)} KB"
     if size >= 1024:
-        return "%.2f KB" % (float(size) / 1024)
-    return "%d B" % size
+        return f"{float(size) / 1024:.2f} KB"
+    return f"{size} B"
 
 
 def format_time(time):
@@ -426,11 +427,13 @@ def format_time(time):
         prefix = "-"
     else:
         prefix = ""
+    # Floor to whole seconds (may receive float from player position)
+    time = int(time)
     if time >= 3600:  # 1 hour
         # time, in hours:minutes:seconds
-        return "%s%d:%02d:%02d" % (prefix, time // 3600, (time % 3600) // 60, time % 60)
+        return f"{prefix}{time // 3600}:{(time % 3600) // 60:02d}:{time % 60:02d}"
     # time, in minutes:seconds
-    return "%s%d:%02d" % (prefix, time // 60, time % 60)
+    return f"{prefix}{time // 60}:{time % 60:02d}"
 
 
 def format_time_display(time):
@@ -601,7 +604,7 @@ def pattern(pat, cap=True, esc=False, markup=False):
 
         def __call__(self, tag, *args):
             if tag in FILESYSTEM_TAGS:
-                return fsnative(str(tag))
+                return fsnative(tag)
             return 0 if "~#" in tag[:2] else self.comma(tag)
 
     fakesong = Fakesong({"filename": tag("filename", cap)})
@@ -720,7 +723,7 @@ class DeferredSignal:
         Can still be reused afterwards.
         """
 
-        if self.dirty:
+        if getattr(self, "dirty", False):
             from gi.repository import GLib
 
             GLib.source_remove(self._id)
@@ -943,12 +946,13 @@ def sanitize_tags(tags, stream=False):
             if not isinstance(value, str):
                 continue
 
-            value = value.strip()
-            if key in san:
-                if value not in san[key].split("\n"):
-                    san[key] += "\n" + value
-            else:
-                san[key] = value
+            text = value.strip()
+            existing = san.get(key)
+            if isinstance(existing, str):
+                if text not in existing.split("\n"):
+                    san[key] = existing + "\n" + text
+            elif existing is None:
+                san[key] = text
 
     return san
 

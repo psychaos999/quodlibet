@@ -5,7 +5,6 @@ Things to improve / normalise / declutter **once the GTK4 migration has landed**
 Append to this as we go; don't act on these mid-migration unless they're blocking.
 Companion to `GTK4_MIGRATION_STATUS.md` (current state) — this file is the "later" list.
 
-
 Shims to remove (`quodlibet/_init.py`)
 --------------------------------------
 
@@ -29,7 +28,6 @@ so the tree stays runnable throughout.
 - `Gtk.Alignment`, `Gtk.Widget.show_all`/`set_no_show_all` no-ops, and the various
   `add()`→`set_child()`/`append()` container shims — remove as call sites migrate.
 
-
 Systematic sweeps
 -----------------
 
@@ -41,16 +39,14 @@ Systematic sweeps
   (queue looked oversized). Sweep every `git show main:<file>` `pack_start`/
   `pack_end` with `expand=True` and confirm the GTK4 side sets the matching
   expand.
-- **`pack_start` → `prepend` mistranslation.** The canonical GTK4 mapping is
-  `pack_start` → `append`; a lot of the migration used `prepend`, which reverses
-  sequential packs. ~133 `.prepend(` sites to audit (cross-check each against
-  `git show main:<file>`). Confirmed reversed and fixed: Album/CoverGrid browsers;
-  still suspect: `qltk/tagsfrompath.py`, `qltk/renamefiles.py` (hbox/sw swap), and
-  intra-hbox prepends elsewhere.
-- **`do_draw` / GTK3 size vfuncs.** Audit for any remaining widgets implementing
-  `do_draw` / `do_get_preferred_*` (GTK4 never calls them). Fixed: `ResizeImage`
-  (`qltk/cover.py`). Check for others.
-
+- **`pack_start` → `prepend` mistranslation.** Canonical mapping is
+  `pack_start` → `append`. Fixed: Album/CoverGrid browsers; **tagsfrompath /
+  renamefiles** (hbox combo/preview + scroller order). Remaining `.prepend`
+  sites should still be spot-checked against `main` if layout looks odd.
+- **`do_draw` / GTK3 size vfuncs.** Fixed: `ResizeImage` (`qltk/cover.py`),
+  `HighlightToggleButton` (`qltk/x.py`), waveform seekbar (`do_snapshot`),
+  `_TreeViewColumnLabel` fade (`qltk/views.py`), animosd `OSDWindow`.
+  No residual `do_draw` / `do_key_press_event` call sites remain.
 
 Idiomatic rewrites still pending
 --------------------------------
@@ -66,12 +62,10 @@ Idiomatic rewrites still pending
   `MenuItem` / `PopoverMenu.append` / `SeparatorMenuItem` shims. Also still on the
   shim: `exfalsowindow` app menu and the covergrid/albums/queue prefs popovers.
   Inline star-rating row is still a deferred enhancement (below).
-- **`Gtk.Image` subclasses that show arbitrary images** — `WebImage`
-  (`qltk/x.py`) and `ResizeWebImage` (`ext/songsmenu/cover_download.py`) hit the
-  same tiny-render trap as CoverGrid; port to `Gtk.Picture`/snapshot.
-- **`TreeViewHints.__motion`** is unwired (truncated-cell hover tooltips gone) —
-  needs a `Gtk.EventControllerMotion` with widget-coord translation.
-
+- **`Gtk.Image` subclasses that show arbitrary images** — **done**
+  (`WebImage` / `ResizeWebImage` → `Gtk.Picture` + Texture).
+- **`TreeViewHints`** — **done** (Gtk.Popover + EventControllerMotion;
+  2026-07-21).
 
 UX enhancements (post-fidelity)
 -------------------------------
@@ -87,11 +81,12 @@ UX enhancements (post-fidelity)
   The trayicon `IndicatorMenu` toggles (Shuffle / Repeat / Stop After This Song)
   are now Gio boolean menu items and hit exactly this "hidden state at rest"
   issue — candidates for the same switch treatment.
-- **libadwaita for the "antiquated UI" problem.** The broader modern-feel /
-  retention concern is really an Adwaita question (switch rows, preferences
-  windows, view toggles, header bars). Big, strategic, post-migration — but it's
-  the lever GNOME apps pull. Worth a deliberate decision rather than drifting.
-
+- **libadwaita chrome (shell done, control redesign later).** Landed:
+  `Adw.PreferencesWindow` hosting existing page boxes; main window
+  `Adw.ToolbarView`; messages via `Adw.AlertDialog` wrappers. Still open:
+  rewrite preference *controls* as `Adw.SwitchRow`/`Adw.ActionRow` (not just
+  host legacy boxes), optional `Adw.ToastOverlay` for transient notices,
+  drop remaining GTK3 dialog shims once all call sites are async.
 
 - **Inline cumulative star rating in the context menu.** Once the menu is on
   `Gio.Menu`, an inline star row (hover-preview, click Nth star = rating N) as a
@@ -100,7 +95,6 @@ UX enhancements (post-fidelity)
   fidelity; this is an enhancement on top. (Spike proved the custom-child slot
   and the cumulative interaction both work.) Low priority, too: the song list
   already has a **ratings column** for click-to-rate without any right-click.
-
 
 Performance / UX (high priority)
 --------------------------------
@@ -116,7 +110,6 @@ Performance / UX (high priority)
   step one (don't realise 1800 widgets); caching is the other half. Treat this
   as a headline item, not polish.
 
-
 Visual / rendering
 ------------------
 
@@ -130,7 +123,6 @@ Visual / rendering
   Cover-size "zoom" is just the existing magnification config — wire it into the
   prefs menu once menus render.
 
-
 Tooling
 -------
 
@@ -139,7 +131,6 @@ Tooling
   after the 26.05 bump until `poetry env use`). A Nix-managed env rebuilds with
   the flake. Gate on the Windows/msys2 path (uv-on-msys2 is rough; the installer
   uses poetry).
-
 
 Tests
 -----

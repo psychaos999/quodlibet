@@ -6,10 +6,11 @@
 # the Free Software Foundation; either version 2 of the License, or
 # (at your option) any later version.
 
-import sys
+from __future__ import annotations
+
 from collections.abc import Sequence
 
-from gi.repository import Gtk, Pango, Gdk, GLib
+from gi.repository import Gtk, Pango, Gdk, GLib, Gio
 
 from quodlibet import C_, _, ngettext, print_e, print_d
 from quodlibet import app
@@ -29,7 +30,7 @@ from quodlibet.qltk.tagscombobox import TagsComboBox, TagsComboBoxEntry
 from quodlibet.qltk.views import RCMHintedTreeView, TreeViewColumn, BaseView
 from quodlibet.qltk.window import Dialog
 from quodlibet.qltk.wlw import WritingWindow
-from quodlibet.qltk.x import SeparatorMenuItem, Button, MenuItem
+from quodlibet.qltk.x import Button
 from quodlibet.util import connect_obj
 from quodlibet.util import massagers
 from quodlibet.util.i18n import numeric_phrase
@@ -453,13 +454,15 @@ class EditTags(Gtk.Box):
 
     @classmethod
     def init_plugins(cls):
-        PluginManager.instance.register_handler(cls.handler)
+        pm = PluginManager.instance
+        if pm is not None:
+            pm.register_handler(cls.handler)
 
     def __init__(self, parent, library):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.title = _("Edit Tags")
         self.set_border_width(12)
-        self._group_info = None
+        self._group_info: AudioFileGroup | None = None
 
         model = ObjectStore()
         view = RCMHintedTreeView(model=model)
@@ -609,8 +612,11 @@ class EditTags(Gtk.Box):
             connect_obj(model, sig, parent.set_pending, save)
 
         view.connect("popup-menu", self._popup_menu, parent)
-        view.connect("button-press-event", self.__button_press)
-        view.connect("key-press-event", self.__view_key_press_event)
+        click = Gtk.GestureClick()
+        click.set_button(0)  # any button
+        click.connect("pressed", self.__button_press_gesture)
+        view.add_controller(click)
+        qltk.connect_key_pressed(view, self.__view_key_press_event)
         selection.connect("changed", self.__tag_select, remove)
         selection.set_mode(Gtk.SelectionMode.MULTIPLE)
 
@@ -680,21 +686,52 @@ class EditTags(Gtk.Box):
             return item
 
     def _popup_menu(self, view: BaseView, _parent):
-        menu = Gtk.PopoverMenu()
-
         view.ensure_popup_selection()
         model, rows = view.get_selection().get_selected_rows()
-        can_change = all(model[path][0].canedit for path in rows)
+        can_change = bool(rows) and all(model[path][0].canedit for path in rows)
+
+        actions = Gio.SimpleActionGroup()
+        menu_model = Gio.Menu()
+        action_i = [0]
+
+        def add_action(callback, enabled=True):
+            name = f"a{action_i[0]}"
+            action_i[0] += 1
+            action = Gio.SimpleAction.new(name, None)
+            action.set_enabled(bool(enabled))
+            action.connect("activate", lambda *_a: callback())
+            actions.add_action(action)
+            return f"etags.{name}"
 
         if len(rows) == 1:
-            row = model[rows[0]]
-            entry = row[0]
-
+            entry = model[rows[0]][0]
             comment = entry.value
             text = comment.text
 
-            split_menu = Gtk.PopoverMenu()
+            # Tag-editing plugins (flat section)
+            plugins = self.handler.plugins
+            print_d(
+                f"Adding {len(plugins)} plugin(s) to menu: "
+                f"{', '.join(p.__name__ for p in plugins)}"
+            )
+            plugins_section = Gio.Menu()
+            for p_cls in plugins:
+                item = self.__item_for(view, p_cls, entry.tag, text)
+                if not item:
+                    continue
+                results = item.activated(entry.tag, text)
+                enabled = results != [(entry.tag, text)] and can_change
+                path = add_action(
+                    lambda it=item: self.__menu_activate(it, view), enabled
+                )
+                plugins_section.append(
+                    (item.get_label() or p_cls.__name__).replace("_", ""), path
+                )
+            if plugins_section.get_n_items():
+                menu_model.append_section(None, plugins_section)
 
+            # Split Tag submenu
+            split_section = Gio.Menu()
             for Item in self._SPLITTERS:
                 if Item.tags and entry.tag not in Item.tags:
                     continue
@@ -702,74 +739,50 @@ class EditTags(Gtk.Box):
                 if not item:
                     continue
                 vals = item.activated(entry.tag, text)
-                changeable = any(not self._group_info.can_change(k) for k in item.needs)
+                group = self._group_info
+                changeable = group is not None and any(
+                    not group.can_change(k) for k in item.needs
+                )
                 fixed = changeable or comment.is_special()
-                if fixed:
-                    item.set_sensitive(False)
                 if len(vals) > 1 and vals[1][1]:
-                    split_menu.append(item)
-            if qltk.get_children(split_menu):
-                split_menu.append(SeparatorMenuItem())
+                    path = add_action(
+                        lambda it=item: self.__menu_activate(it, view),
+                        enabled=can_change and not fixed,
+                    )
+                    split_section.append(
+                        (item.get_label() or Item.__name__).replace("_", ""), path
+                    )
 
-            plugins = self.handler.plugins
-            print_d(
-                f"Adding {len(plugins)} plugin(s) to menu: "
-                f"{', '.join(p.__name__ for p in plugins)}"
-            )
-            for p_cls in plugins:
-                item = self.__item_for(view, p_cls, entry.tag, text)
-                if not item:
-                    continue
-                results = item.activated(entry.tag, text)
-                # Only enable for the user if the plugin would do something
-                item.set_sensitive(results != [(entry.tag, text)])
-                menu.append(item)
-            pref_item = MenuItem(_("_Configure"), Icons.PREFERENCES_SYSTEM)
-            split_menu.append(pref_item)
-
-            def show_prefs(parent):
+            def show_prefs():
                 from quodlibet.qltk.exfalsowindow import ExFalsoWindow
 
                 if isinstance(app.window, ExFalsoWindow):
                     from quodlibet.qltk.exfalsowindow import PreferencesWindow
 
-                    window = PreferencesWindow(parent)
+                    window = PreferencesWindow(self)
                 else:
                     from quodlibet.qltk.prefs import PreferencesWindow
 
-                    window = PreferencesWindow(parent, open_page="tagging")
-                window.show()
+                    window = PreferencesWindow(self, open_page="tagging")
+                window.present()
 
-            connect_obj(pref_item, "activate", show_prefs, self)
-
-            split_item = MenuItem(_("_Split Tag"), Icons.EDIT_FIND_REPLACE)
-
-            if qltk.get_children(split_menu):
-                split_item.set_submenu(split_menu)
+            path = add_action(show_prefs, enabled=True)
+            split_section.append(_("Configure"), path)
+            # Split Tag submenu only if at least one splitter item + Configure
+            if split_section.get_n_items() > 1:
+                menu_model.append_submenu(_("Split Tag"), split_section)
             else:
-                split_item.set_sensitive(False)
+                menu_model.append_section(None, split_section)
 
-            menu.append(split_item)
+        actions_section = Gio.Menu()
+        path = add_action(lambda: self.__copy_tag_value(None, view), enabled=True)
+        actions_section.append(_("Copy Value(s)"), path)
+        path = add_action(lambda: self.__remove_tag(None, view), enabled=can_change)
+        actions_section.append(_("Remove"), path)
+        menu_model.append_section(None, actions_section)
 
-        copy_b = MenuItem(_("_Copy Value(s)"), Icons.EDIT_COPY)
-        copy_b.connect("activate", self.__copy_tag_value, view)
-        qltk.add_fake_accel(copy_b, "<Primary>c")
-        menu.append(copy_b)
-
-        remove_b = MenuItem(_("_Remove"), Icons.LIST_REMOVE)
-        remove_b.connect("activate", self.__remove_tag, view)
-        qltk.add_fake_accel(remove_b, "Delete")
-        menu.append(remove_b)
-
-        # Setting the menu itself to be insensitive causes it to not
-        # be dismissed; see #473.
-        for c in qltk.get_children(menu):
-            c.set_sensitive(can_change and c.get_property("sensitive"))
-        copy_b.set_sensitive(True)
-        remove_b.set_sensitive(True)
-        menu.connect("selection-done", lambda m: m.destroy())
-
-        # XXX: Keep reference
+        menu = Gtk.PopoverMenu.new_from_model(menu_model)
+        menu.insert_action_group("etags", actions)
         self.__menu = menu
         return view.popup_menu(menu, 3, GLib.CURRENT_TIME)
 
@@ -780,7 +793,8 @@ class EditTags(Gtk.Box):
     def __add_new_tag(self, model, tag, value):
         assert isinstance(value, str)
         iters = [i for (i, v) in model.iterrows() if v.tag == tag]
-        if iters and not self._group_info.can_multiple_values(tag):
+        group = self._group_info
+        if iters and group is not None and not group.can_multiple_values(tag):
             title = _("Unable to add tag")
             msg = _("Unable to add %s") % util.bold(tag)
             msg += "\n\n"
@@ -799,7 +813,10 @@ class EditTags(Gtk.Box):
             model.append(row=[entry])
 
     def __add_tag(self, activator, model, library):
-        add = AddTagDialog(self, self._group_info.can_change(), library)
+        group = self._group_info
+        if group is None:
+            return
+        add = AddTagDialog(self, group.can_change(), library)
 
         while True:
             resp = add.run()
@@ -810,7 +827,7 @@ class EditTags(Gtk.Box):
             assert isinstance(value, str)
             value = massagers.validate(tag, value)
             assert isinstance(value, str)
-            if not self._group_info.can_change(tag):
+            if not group.can_change(tag):
                 title = ngettext("Invalid tag", "Invalid tags", 1)
                 msg = ngettext(
                     "Invalid tag %s\n\nThe files currently "
@@ -877,7 +894,10 @@ class EditTags(Gtk.Box):
                 l.append((entry.origtag, entry.value, entry.origvalue))
 
         was_changed = set()
-        songs = self._group_info.songs
+        group = self._group_info
+        if group is None:
+            return
+        songs = group.songs
         win = WritingWindow(self, len(songs))
         win.show()
         all_done = False
@@ -994,7 +1014,10 @@ class EditTags(Gtk.Box):
         entry = model[path][0]
         if new_tag == entry.tag:
             return
-        if not self._group_info.can_change(new_tag):
+        group = self._group_info
+        if group is None:
+            return
+        if not group.can_change(new_tag):
             # Can't add the new tag.
             title = ngettext("Invalid tag", "Invalid tags", 1)
             msg = ngettext(
@@ -1042,38 +1065,45 @@ class EditTags(Gtk.Box):
 
             model.row_changed(path, model.get_iter(path))
 
-    def __button_press(self, view, event):
-        if event.button not in [Gdk.BUTTON_PRIMARY, Gdk.BUTTON_MIDDLE]:
-            return Gdk.EVENT_PROPAGATE
+    def __button_press_gesture(self, gesture, n_press, x, y):
+        button = gesture.get_current_button()
+        if button not in [Gdk.BUTTON_PRIMARY, Gdk.BUTTON_MIDDLE]:
+            return
 
-        x, y = map(int, [event.x, event.y])
+        view = gesture.get_widget()
         try:
-            path, col, cellx, celly = view.get_path_at_pos(x, y)
+            path, col, cellx, celly = view.get_path_at_pos(int(x), int(y))
         except TypeError:
-            return Gdk.EVENT_PROPAGATE
+            return
 
-        if event.button == Gdk.BUTTON_MIDDLE and col == view.get_columns()[2]:
-            display = Gdk.DisplayManager.get().get_default_display()
-            selection = Gdk.SELECTION_PRIMARY
-            if sys.platform == "win32":
-                selection = Gdk.SELECTION_CLIPBOARD
-
-            clipboard = Gtk.Clipboard.get_for_display(display, selection)
+        if button == Gdk.BUTTON_MIDDLE and col == view.get_columns()[2]:
+            display = Gdk.Display.get_default()
+            if display is None:
+                return
+            clipboard = display.get_clipboard()
             for rend in col.get_cells():
                 if rend.get_property("editable"):
-                    clipboard.request_text(self.__paste, (rend, path.get_indices()[0]))
-                    return Gdk.EVENT_STOP
-            else:
-                return Gdk.EVENT_PROPAGATE
-        else:
-            return Gdk.EVENT_PROPAGATE
+                    # Bind loop vars as defaults so the closure is stable
+                    def paste_cb(clip, result, data=None, r=rend, p=path):
+                        try:
+                            text = clip.read_text_finish(result)
+                        except Exception:
+                            return
+                        self.__paste(clip, text, (r, p.get_indices()[0]))
+
+                    clipboard.read_text_async(None, paste_cb)
+                    gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+                    return
 
     def _update(self, songs=None):
         if songs is None:
-            songs = self._group_info.songs
+            info = self._group_info
+            if info is None:
+                return
+            songs = info.songs
         else:
             self._group_info = AudioFileGroup(songs)
-        info = self._group_info
+            info = self._group_info
 
         keys = list(info.keys())
         default_tags = get_default_tags()
@@ -1144,7 +1174,8 @@ class EditTags(Gtk.Box):
 
     def __tag_editing_started(self, render, editable, path, model, library):
         if not editable.get_completion():
-            tags = self._group_info.can_change()
+            group = self._group_info
+            tags = group.can_change() if group is not None else []
             if tags is True:
                 tags = USER_TAGS
             completion = qltk.EntryCompletion(tags)

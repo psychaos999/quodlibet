@@ -26,27 +26,30 @@ if os.name == "nt" and os.environ.get("MSYSTEM"):
 class Version(tuple):
     """Represent the version of a dependency as a tuple"""
 
-    def __new__(cls, name, *args, **kwargs):
+    name: str
+    message: str
+
+    def __new__(cls, name: str, *args, message: str = "", **kwargs):
         inst = tuple.__new__(Version, args)
         inst.name = name
-        inst.message = kwargs.pop("message", "")
+        inst.message = message
         return inst
 
     def __init__(self, *args, **kwargs):
         pass
 
-    def human_version(self):
+    def human_version(self) -> str:
         return ".".join(map(str, self))
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.human_version()
 
-    def check(self, version_tuple):
+    def check(self, version_tuple) -> None:
         """Raises ImportError if the version isn't supported"""
 
         if self[0] == version_tuple[0] and version_tuple >= self:
             return
-        message = " " + self.message if self.message else ""
+        message = f" {self.message}" if self.message else ""
         version = Version("", *version_tuple)
         raise ImportError(f"{self.name} {self} required. {version} found.{message}")
 
@@ -63,6 +66,7 @@ class MinVersions:
         "mutagen version.",
     )
     GTK = Version("GTK+", 4, 10)
+    ADWAITA = Version("libadwaita", 1, 4)
     PYGOBJECT = Version("PyGObject", 3, 18)
     GSTREAMER = Version("GStreamer", 1, 8)
 

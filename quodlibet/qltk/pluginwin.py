@@ -23,7 +23,7 @@ from quodlibet.plugins.playlist import PlaylistPlugin
 from quodlibet.plugins.playorder import PlayOrderPlugin
 from quodlibet.plugins.query import QueryPlugin
 from quodlibet.plugins.songsmenu import SongsMenuPlugin
-from quodlibet.qltk import Icons, is_accel, show_uri
+from quodlibet.qltk import Icons, is_accel_pressed, show_uri
 from quodlibet.qltk.entry import UndoEntry
 from quodlibet.qltk.models import ObjectStore, ObjectModelFilter
 from quodlibet.qltk.views import HintedTreeView
@@ -256,16 +256,22 @@ class PluginListView(HintedTreeView):
         column.set_expand(True)
         self.append_column(column)
 
-    def do_key_press_event(self, event):
-        if is_accel(event, "space", "KP_Space"):
-            selection = self.get_selection()
-            fmodel, fiter = selection.get_selected()
-            plugin = fmodel.get_value(fiter)
-            if plugin.can_enable:
-                self._emit_toggled(fmodel.get_path(fiter), not plugin_enabled(plugin))
-            self.get_model().iter_changed(fiter)
-        else:
-            Gtk.TreeView.do_key_press_event(self, event)
+        key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.connect("key-pressed", self.__on_key_pressed)
+        self.add_controller(key_ctrl)
+
+    def __on_key_pressed(self, _controller, keyval, _keycode, state):
+        if not is_accel_pressed(keyval, state, "space", "KP_Space"):
+            return False
+        selection = self.get_selection()
+        fmodel, fiter = selection.get_selected()
+        if fiter is None:
+            return False
+        plugin = fmodel.get_value(fiter)
+        if plugin.can_enable:
+            self._emit_toggled(fmodel.get_path(fiter), not plugin_enabled(plugin))
+        self.get_model().iter_changed(fiter)
+        return True
 
     def __toggled(self, render, path):
         render.set_active(not render.get_active())

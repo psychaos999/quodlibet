@@ -9,7 +9,7 @@
 import sys
 import os
 
-from gi.repository import Gtk, Gdk
+from gi.repository import Gtk, Gdk, Adw
 
 from quodlibet import config
 from quodlibet.qltk import get_top_parent, is_wayland, is_accel
@@ -41,10 +41,10 @@ def on_first_map(window, callback, *args, **kwargs):
 
 
 def should_use_header_bar():
-    # GTK4: gtk-dialogs-use-header always available
+    # GTK4 / libadwaita: prefer header bars for dialogs where the platform wants them
     settings = Gtk.Settings.get_default()
     if not settings:
-        return False
+        return True
     return settings.get_property("gtk-dialogs-use-header")
 
 
@@ -82,8 +82,12 @@ class Dialog(Gtk.Dialog):
         return button
 
 
-class Window(Gtk.Window):
-    """Base window class the keeps track of all window instances.
+class Window(Adw.Window):
+    """Base window class that keeps track of all window instances.
+
+    Built on ``Adw.Window`` so libadwaita styling, breakpoints, and
+    adaptive layout work without changing call sites. Content goes through
+    ``set_content`` (with ``set_child`` / ``add`` as compatibility aliases).
 
     All active instances can be accessed through Window.windows.
     By defining dialog=True as a kwarg binds Escape to close, otherwise
@@ -95,16 +99,35 @@ class Window(Gtk.Window):
 
     def __init__(self, *args, **kwargs):
         self._header_bar = None
-        dialog = kwargs.pop("dialog", True)
+        self._is_dialog = kwargs.pop("dialog", True)
+        # Adw.Window / Gtk.Window no longer take type_hint
+        kwargs.pop("type_hint", None)
         super().__init__(*args, **kwargs)
         type(self).windows.append(self)
-        if dialog:
+        if self._is_dialog:
             # Modal is the only way to center the window on the parent
             # with wayland atm
             if is_wayland():
                 self.set_modal(True)
-            self.set_type_hint(Gdk.WindowTypeHint.DIALOG)
         self.set_destroy_with_parent(True)
+
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self._on_key_pressed)
+        self.add_controller(key)
+
+    # --- content / child API (Adw.Window uses set_content) ---
+
+    def set_child(self, child):
+        """Compatibility: map set_child → Adw.Window.set_content."""
+        self.set_content(child)
+
+    def get_child(self):
+        """Compatibility: map get_child → Adw.Window.get_content."""
+        return self.get_content()
+
+    def add(self, child):
+        """Compatibility: map add → Adw.Window.set_content."""
+        self.set_content(child)
 
     def destroy(self):
         windows = type(self).windows
@@ -112,29 +135,50 @@ class Window(Gtk.Window):
             windows.remove(self)
         if isinstance(self, InstanceTracker):
             self._deregister_instance()
-        super().destroy()
+        # Adw/Gtk4: prefer close(); keep destroy if present for tests
+        if hasattr(super(), "destroy"):
+            try:
+                super().destroy()
+                return
+            except Exception:
+                pass
+        self.close()
 
-    def _on_key_press(self, widget, event):
-        is_dialog = self.get_type_hint() == Gdk.WindowTypeHint.DIALOG
+    def _on_key_pressed(self, controller, keyval, keycode, state):
+        # Build a minimal stand-in so is_accel / callers keep working
+        class _Key:
+            def __init__(self, keyval, hardware_keycode, state):
+                self.keyval = keyval
+                self.hardware_keycode = hardware_keycode
+                self.state = state
 
-        if (is_dialog and is_accel(event, "Escape")) or (
-            not is_dialog and is_accel(event, "<Primary>w")
+        event = _Key(keyval, keycode, state)
+
+        if (self._is_dialog and is_accel(event, "Escape")) or (
+            not self._is_dialog and is_accel(event, "<Primary>w")
         ):
             # Do not close the window if we edit a Gtk.CellRendererText.
             # Focus the treeview instead.
-            if isinstance(self.get_focus(), Gtk.Entry) and isinstance(
-                self.get_focus().get_parent(), Gtk.TreeView
+            focus = self.get_focus()
+            if isinstance(focus, Gtk.Entry) and isinstance(
+                focus.get_parent(), Gtk.TreeView
             ):
-                self.get_focus().get_parent().grab_focus()
+                focus.get_parent().grab_focus()
                 return Gdk.EVENT_PROPAGATE
             self.close()
             return Gdk.EVENT_STOP
 
-        if not is_dialog and is_accel(event, "F11"):
+        if not self._is_dialog and is_accel(event, "F11"):
             self.toggle_fullscreen()
             return Gdk.EVENT_STOP
 
         return Gdk.EVENT_PROPAGATE
+
+    def _on_key_press(self, widget, event):
+        """Legacy GTK3 entry point kept for callers that still use it."""
+        return self._on_key_pressed(
+            None, event.keyval, getattr(event, "hardware_keycode", 0), event.state
+        )
 
     def toggle_fullscreen(self):
         """Toggle the fullscreen mode of the window depending on its current
@@ -142,13 +186,7 @@ class Window(Gtk.Window):
         when it does.
         """
 
-        window = self.get_window()
-        if not window:
-            is_fullscreen = False
-        else:
-            is_fullscreen = window.get_state() & Gdk.WindowState.FULLSCREEN
-
-        if is_fullscreen:
+        if self.is_fullscreen():
             self.unfullscreen()
         else:
             self.fullscreen()
@@ -172,9 +210,9 @@ class Window(Gtk.Window):
         if not should_use_header_bar():
             return False
 
-        header_bar = Gtk.HeaderBar()
-        # GTK4: set_show_close_button() → set_show_title_buttons()
-        header_bar.set_show_title_buttons(True)
+        # Prefer Adw.HeaderBar for correct libadwaita spacing / styling
+        header_bar = Adw.HeaderBar()
+        header_bar.set_show_end_title_buttons(True)
         header_bar.show()
         old_title = self.get_title()
         self.set_titlebar(header_bar)
@@ -189,7 +227,7 @@ class Window(Gtk.Window):
         a close button.
         """
 
-        if self.get_type_hint() == Gdk.WindowTypeHint.NORMAL:
+        if not self._is_dialog:
             return True
 
         if os.name == "nt":
@@ -199,7 +237,8 @@ class Window(Gtk.Window):
             return True
 
         if self._header_bar is not None:
-            # GTK4: get_show_close_button() → get_show_title_buttons()
+            if isinstance(self._header_bar, Adw.HeaderBar):
+                return self._header_bar.get_show_end_title_buttons()
             return self._header_bar.get_show_title_buttons()
 
         return True
@@ -247,7 +286,23 @@ class Window(Gtk.Window):
 
 
 class PersistentWindowMixin:
-    """A mixin for saving/restoring window size/maximized state"""
+    """A mixin for saving/restoring window size/maximized state.
+
+    Expects to be mixed into a ``Gtk.Window`` subclass (provides connect,
+    maximize, resize, get_width, etc.).
+    """
+
+    # Type checkers cannot see Window methods on a bare mixin.
+    if False:  # pragma: no cover
+
+        def connect(self, *args, **kwargs): ...
+        def get_transient_for(self): ...
+        def get_visible(self): ...
+        def maximize(self): ...
+        def unmaximize(self): ...
+        def resize(self, width, height): ...
+        def get_width(self): ...
+        def get_height(self): ...
 
     def enable_window_tracking(self, config_prefix, size_suffix=""):
         """Enable tracking/saving of changes and restore size/maximized state.
@@ -364,17 +419,21 @@ class PersistentWindowMixin:
 
         # GTK4: get_size() removed, use get_width()/get_height()
         width, height = self.get_width(), self.get_height()
-        value = "%d %d" % (width, height)
+        value = f"{width} {height}"
         config.set("memory", self.__conf("size"), value)
 
 
 class _Unique:
-    """A mixin for window-like classes to ensure one instance per class."""
+    """A mixin for window-like classes to ensure one instance per class.
 
-    __window = None
+    Uses a non-mangled registry so each concrete subclass keeps its own
+    singleton (double-underscore attributes are shared via the defining class).
+    """
+
+    _unique_window = None
 
     def __new__(cls, *args, **kwargs):
-        window = cls.__window
+        window = cls.__dict__.get("_unique_window")
         if window is None:
             return super().__new__(cls, *args, **kwargs)
         # Look for widgets in the args, if there is one and it has
@@ -393,17 +452,40 @@ class _Unique:
     @classmethod
     def is_not_unique(cls):
         """Returns True if a window instance already exists."""
-        return bool(cls.__window)
+        return bool(cls.__dict__.get("_unique_window"))
 
     def __init__(self, *args, **kwargs):
-        if type(self).__window:
+        cls = type(self)
+        if cls.__dict__.get("_unique_window"):
             return
-        type(self).__window = self
+        cls._unique_window = self
         super().__init__(*args, **kwargs)
-        connect_obj(self, "destroy", self.__destroy, self)
+        # GTK4/Adw: "destroy" is often a no-op shim; also clear on close/hide
+        connect_obj(self, "destroy", self.__clear_unique, self)
+        self.connect("close-request", self.__on_close_request)
 
-    def __destroy(self, *args):
-        type(self).__window = None
+    def __on_close_request(self, *_args):
+        self.__clear_unique()
+        return False  # allow default close
+
+    def __clear_unique(self, *_args):
+        cls = type(self)
+        if cls.__dict__.get("_unique_window") is self:
+            cls._unique_window = None
+
+    def destroy(self):
+        """Destroy/close and drop the unique registration."""
+        self.__clear_unique()
+        # Continue MRO so Window.destroy can update Window.windows, etc.
+        try:
+            super().destroy()
+        except Exception:
+            close = getattr(self, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
 
 class UniqueWindow(_Unique, Window):

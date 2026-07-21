@@ -84,12 +84,7 @@ class _KeyValueEditor(qltk.Window):
         sw.set_vexpand(True)
         self.get_child().prepend(sw)
 
-        menu = Gtk.PopoverMenu()
-        remove = qltk.MenuItem(_("_Remove"), Icons.LIST_REMOVE)
-        connect_obj(remove, "activate", self.__remove, view)
-        qltk.add_fake_accel(remove, "Delete")
-        menu.append(remove)
-        menu.show_all()
+        menu = qltk.gio_action_popover([(_("_Remove"), lambda: self.__remove(view))])
 
         bbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         rem_b = qltk.Button(_("_Remove"), Icons.LIST_REMOVE)
@@ -113,8 +108,7 @@ class _KeyValueEditor(qltk.Window):
         view.connect("popup-menu", self.__popup, menu)
         connect_obj(rem_b, "clicked", self.__remove, view)
         connect_obj(close, "clicked", qltk.Window.destroy, self)
-        view.connect("key-press-event", self.__view_key_press)
-        connect_obj(self, "destroy", Gtk.PopoverMenu.destroy, menu)
+        qltk.connect_key_pressed(view, self.__view_key_press)
 
         name.grab_focus()
         self.get_child().show_all()

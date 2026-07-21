@@ -529,7 +529,6 @@ class FileSelector(Paned):
 
         model = ObjectStore()
         filelist = AllTreeView(model=model)
-        filelist.connect("draw", self.__restore_scroll_pos_on_draw)
 
         column = TreeViewColumn(title=_("Songs"))
         column.set_sizing(Gtk.TreeViewColumnSizing.AUTOSIZE)
@@ -620,6 +619,8 @@ class FileSelector(Paned):
         fselect.handler_block(self.__sig)
         fmodel, frows = fselect.get_selected_rows()
         selected = [fmodel[row][0] for row in frows]
+        # Capture before model replace; TreeView may clamp the adj on refill.
+        saved_scroll = filelist.get_vadjustment().get_value()
 
         fmodel = filelist.get_model()
         fmodel.clear()
@@ -641,13 +642,15 @@ class FileSelector(Paned):
 
         fselect.handler_unblock(self.__sig)
         fselect.emit("changed")
-        self._saved_scroll_pos = filelist.get_vadjustment().get_value()
 
-    def __restore_scroll_pos_on_draw(self, treeview, context):
-        if self._saved_scroll_pos:
-            vadj = treeview.get_vadjustment()
-            vadj.set_value(self._saved_scroll_pos)
-            self._saved_scroll_pos = None
+        if saved_scroll:
+            vadj = filelist.get_vadjustment()
+
+            def restore():
+                vadj.set_value(saved_scroll)
+                return False
+
+            GLib.idle_add(restore)
 
 
 def _get_main_folders():

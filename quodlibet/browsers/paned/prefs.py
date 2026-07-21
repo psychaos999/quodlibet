@@ -7,7 +7,7 @@
 # the Free Software Foundation; either version 2 of the License, or
 # (at your option) any later version.
 
-from gi.repository import Gtk
+from gi.repository import Gtk, Gio
 
 from quodlibet import config
 from quodlibet import util
@@ -15,7 +15,7 @@ from quodlibet import qltk
 from quodlibet import _
 from quodlibet.qltk.views import BaseView
 from quodlibet.qltk.tagscombobox import TagsComboBoxEntry
-from quodlibet.qltk.x import SymbolicIconImage, MenuItem, Button
+from quodlibet.qltk.x import SymbolicIconImage, Button
 from quodlibet.qltk import Icons
 from quodlibet.qltk.menubutton import MenuButton
 from quodlibet.qltk.ccb import ConfigCheckButton
@@ -199,24 +199,25 @@ class PreferencesButton(Gtk.Box):
     def __init__(self, browser):
         super().__init__()
 
-        self._menu = menu = Gtk.PopoverMenu()
+        action_group = Gio.SimpleActionGroup()
+        menu_model = Gio.Menu()
+        prefs_action = Gio.SimpleAction.new("open-prefs", None)
 
-        pref_item = MenuItem(_("_Preferences"), Icons.PREFERENCES_SYSTEM)
-
-        def preferences_cb(menu_item):
+        def preferences_cb(*_args):
             window = Preferences(browser)
-            window.show()
+            window.present()
 
-        pref_item.connect("activate", preferences_cb)
-        menu.append(pref_item)
+        prefs_action.connect("activate", preferences_cb)
+        action_group.add_action(prefs_action)
+        menu_model.append(_("Preferences"), "prefs.open-prefs")
 
-        menu.show_all()
+        popover = Gtk.PopoverMenu.new_from_model(menu_model)
+        popover.insert_action_group("prefs", action_group)
 
         button = MenuButton(
             SymbolicIconImage(Icons.OPEN_MENU, Gtk.IconSize.NORMAL), arrow=True
         )
-        button.set_menu(menu)
-        button.show()
+        button.set_menu(popover)
         self.prepend(button)
 
 

@@ -110,6 +110,22 @@ class SongsMenuPluginHandler(PluginHandler):
         if album_confirmer is not None:
             self._confirm_multiple_albums = album_confirmer
 
+    def menu(self, library, songs, parent=None):
+        """Return a plugins ``Gtk.PopoverMenu`` for *songs*, or ``None``.
+
+        Used by ExFalso's file-list context menu (outside SongsMenu).
+        """
+        parent_getter = lambda: get_top_parent(parent)
+        actions = Gio.SimpleActionGroup()
+        item = self.build_menu_item(library, songs, actions, "plugins", parent_getter)
+        if item is None:
+            return None
+        model = Gio.Menu()
+        model.append_item(item)
+        popover = Gtk.PopoverMenu.new_from_model(model)
+        popover.insert_action_group("plugins", actions)
+        return popover
+
     def build_menu_item(self, library, songs, action_group, prefix, parent_getter):
         """Build a "Plugins" submenu :class:`Gio.MenuItem`, or ``None``.
 

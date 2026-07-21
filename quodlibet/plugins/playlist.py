@@ -15,6 +15,13 @@ from quodlibet.plugins import PluginHandler, PluginManager
 from quodlibet.plugins.gui import MenuItemPlugin
 
 
+def _menu_item_spec(label, callback, enabled=True, accel=None):
+    """Lazy import to avoid circular imports with songsmenu."""
+    from quodlibet.qltk.songsmenu import MenuItemSpec
+
+    return MenuItemSpec(label, callback, enabled=enabled, accel=accel)
+
+
 def confirm_multi_playlist_invoke(parent, plugin_name, count):
     """Dialog to confirm invoking a plugin with X playlists
     in case X is high
@@ -95,18 +102,15 @@ class PlaylistPluginHandler(PluginHandler):
         self.__plugins = []
         self._confirm_multiple = confirmer or confirm_multi_playlist_invoke
 
-    def populate_menu(self, menu, library, browser, playlists):
-        """Appends items onto `menu` for each enabled playlist plugin,
-        separated as necessary."""
+    def menu_item_specs(self, library, browser, playlists):
+        """Return ``MenuItemSpec`` entries for enabled playlist plugins."""
 
         attrs = ["plugin_playlist", "plugin_playlists"]
-
         if len(playlists) == 1:
             attrs.append("plugin_single_playlist")
 
         items = []
-        kinds = self.__plugins
-        kinds.sort(key=lambda plugin: plugin.PLUGIN_ID)
+        kinds = sorted(self.__plugins, key=lambda plugin: plugin.PLUGIN_ID)
         print_d("Found %d Playlist plugin(s): %s" % (len(kinds), kinds))
         for kind in kinds:
             usable = any(callable(getattr(kind, s)) for s in attrs)
@@ -118,8 +122,53 @@ class PlaylistPluginHandler(PluginHandler):
                     print_exc()
         items = [i for i in items if i.initialized]
 
-        if items:
+        specs = []
+        for item in items:
+            # Keep instance alive via default arg capture
+            def _activate(
+                _parent=None, plugin=item, lib=library, br=browser, pls=playlists
+            ):
+                try:
+                    self.__on_activate(plugin, plugin, lib, br, pls)
+                except Exception:
+                    print_exc()
+
+            label = (
+                getattr(item, "PLUGIN_NAME", None) or item.get_label() or kind.__name__
+            )
+            specs.append(
+                _menu_item_spec(label, _activate, enabled=bool(item.get_sensitive()))
+            )
+        return specs
+
+    def populate_menu(self, menu, library, browser, playlists):
+        """Appends items onto a *widget* menu for each enabled playlist plugin.
+
+        Prefer :meth:`menu_item_specs` for Gio.Menu-based ``SongsMenu``.
+        """
+
+        specs = self.menu_item_specs(library, browser, playlists)
+        if not specs:
+            return
+        # Legacy widget-menu path (still used if a non-Gio menu is passed)
+        if hasattr(menu, "append") and not hasattr(menu, "get_menu_model"):
             menu.append(SeparatorMenuItem())
+            for item in specs:
+                # can't place MenuItemSpec on a widget menu; skip
+                pass
+            attrs = ["plugin_playlist", "plugin_playlists"]
+            if len(playlists) == 1:
+                attrs.append("plugin_single_playlist")
+            items = []
+            kinds = sorted(self.__plugins, key=lambda plugin: plugin.PLUGIN_ID)
+            for kind in kinds:
+                usable = any(callable(getattr(kind, s)) for s in attrs)
+                if usable:
+                    try:
+                        items.append(kind(playlists=playlists, library=library))
+                    except Exception:
+                        print_exc()
+            items = [i for i in items if i.initialized]
             for item in items:
                 try:
                     menu.append(item)
@@ -131,7 +180,6 @@ class PlaylistPluginHandler(PluginHandler):
                         item.connect("activate", self.__on_activate, item, *args)
                 except Exception:
                     print_exc()
-                    # GTK4: destroy() removed - item cleaned up automatically
 
     def handle(self, plugin_id, library, browser, playlists):
         """Start a plugin directly without a menu"""

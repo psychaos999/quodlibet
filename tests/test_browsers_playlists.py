@@ -438,7 +438,23 @@ class TPlaylistsBrowser(TestCase):
 
     @staticmethod
     def _fake_browser_pack(b):
-        app.window.get_child().prepend(b, True, True, 0)
+        # Main window content is Adw.ToolbarView; pack into the browser slot.
+        child = app.window.get_child()
+        content = child.get_content() if hasattr(child, "get_content") else child
+        if content is not None and hasattr(content, "set_start_child"):
+            # Gtk.Paned: replace start child if needed
+            try:
+                content.set_start_child(b)
+                return
+            except Exception:
+                pass
+        if hasattr(child, "set_content"):
+            child.set_content(b)
+        elif hasattr(content, "append"):
+            b.set_vexpand(True)
+            content.append(b)
+        else:
+            app.window.set_child(b)
 
     class MockConfirmerAccepting:
         RESPONSE_INVOKE = Gtk.ResponseType.YES

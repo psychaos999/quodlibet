@@ -15,7 +15,7 @@ from quodlibet import _, print_w, print_d, app, ngettext
 from quodlibet.qltk.chooser import choose_folders, _get_chooser, _run_chooser
 from quodlibet.qltk.views import RCMHintedTreeView
 from quodlibet.qltk.models import ObjectStore
-from quodlibet.qltk.x import MenuItem, Button
+from quodlibet.qltk.x import Button
 from quodlibet.qltk import Icons
 from quodlibet.util.path import unexpand
 from quodlibet.util.library import get_scan_dirs, set_scan_dirs
@@ -33,11 +33,8 @@ class ScanBox(Gtk.Box):
         view.set_fixed_height_mode(True)
         view.set_headers_visible(False)
 
-        menu = Gtk.PopoverMenu()
-        remove_item = MenuItem(_("_Remove"), Icons.LIST_REMOVE)
-        menu.append(remove_item)
+        menu = qltk.gio_action_popover([(_("_Remove"), lambda: self.__remove(view))])
         view.connect("popup-menu", self.__popup, menu)
-        connect_obj(remove_item, "activate", self.__remove, view)
 
         sw = Gtk.ScrolledWindow()
         sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)

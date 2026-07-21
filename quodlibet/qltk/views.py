@@ -9,14 +9,13 @@
 
 import contextlib
 import os
+from typing import Any
 
-from gi.repository import Gtk, Gdk, GObject, Graphene, Pango, GLib
-import cairo
+from gi.repository import Gtk, Gdk, GObject, Graphene, Gsk, Pango, GLib
 
 from quodlibet import print_e
 from quodlibet import config
 from quodlibet.qltk import (
-    is_accel,
     is_accel_pressed,
     is_wayland,
     menu_popup,
@@ -26,123 +25,259 @@ from quodlibet.qltk import (
 from .util import GSignals
 
 
-class TreeViewHints(Gtk.Window):
-    """Handle 'hints' for treeviews. This includes expansions of truncated
-    columns, and in the future, tooltips."""
+class TreeViewHints(Gtk.Popover):
+    """Expand truncated TreeView cells into a popover-style tooltip on hover.
 
-    class _MinLabel(Gtk.Label):
-        def do_get_preferred_width(*args):
-            return (0, Gtk.Label.do_get_preferred_width(*args)[0])
-
-    # Note: hover tooltips on truncated TreeView cells are not yet wired up
-    # for GTK4. The original GTK3 motion handler relied on bin_window and
-    # convert_bin_window_to_widget_coords, both removed. A future pass should
-    # attach a Gtk.EventControllerMotion and compute positions in widget
-    # coordinates.
+    Uses widget coordinates from ``EventControllerMotion`` (GTK4 has no
+    bin_window). The popover is non-interactive (``can-target=False``,
+    ``autohide=False``) so pointer events keep going to the view.
+    """
 
     def __init__(self):
-        try:
-            # gtk+ 3.20
-            TreeViewHints.set_css_name("tooltip")
-        except AttributeError:
-            pass
-
         super().__init__()
-        self.__clabel = Gtk.Label()
-        self.__clabel.set_valign(0.5)
+        self.set_autohide(False)
+        self.set_has_arrow(False)
+        self.set_can_focus(False)
+        self.set_can_target(False)
+        self.set_position(Gtk.PositionType.BOTTOM)
+        self.add_css_class("tooltip")
+        self.add_css_class("ql-tooltip")
+        self.set_name("gtk-tooltip")
+
+        self.__clabel = Gtk.Label(xalign=0.0)
         self.__clabel.set_ellipsize(Pango.EllipsizeMode.NONE)
 
-        self.__label = label = self._MinLabel()
-        label.set_valign(0.5)
+        self.__label = label = Gtk.Label(xalign=0.0)
         label.set_ellipsize(Pango.EllipsizeMode.NONE)
         self.set_child(label)
 
-        context = self.get_style_context()
-        context.add_class("tooltip")
-        context.add_class("ql-tooltip")
-
-        self.set_can_focus(False)
-        # Hint window must not intercept pointer events; events should reach
-        # the view underneath.
-        self.set_can_target(False)
-        self.set_resizable(False)
-        self.set_name("gtk-tooltip")
-
-        self.__handlers = {}
+        self.__controllers: dict[Gtk.Widget, list] = {}
+        self.__handlers: dict[Gtk.Widget, list[int]] = {}
         self.__current_path = self.__current_col = None
         self.__current_renderer = None
+        self.__edit_id = None
         self.__view = None
-        self.__hide_id = None
-
-    def connect_view(self, view):
-        # don't depend on padding set by theme, we need the text coordinates
-        # to match in all cases
-        self._style_provider = style_provider = Gtk.CssProvider()
-        style_provider.load_from_data(b"""
+        self.__style_provider = Gtk.CssProvider()
+        self.__style_provider.load_from_data(b"""
             .ql-tooltip * {
                 border-width: 0px;
                 padding: 0px;
             }
+            popover.ql-tooltip,
             .ql-tooltip {
                 padding: 0px;
             }
+            popover.ql-tooltip > contents {
+                padding: 0px;
+            }
         """)
-
-        # somehow this doesn't apply if we set it on the window, only
-        # if set for the screen. gets reverted again in disconnect_view()
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(),
-            style_provider,
+            self.__style_provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
 
-        # Hide the hint on view-level events. Motion/showing the hint itself
-        # is currently disabled — see the TODO on the class.
-        self.__handlers[view] = [
-            view.connect("unmap", self.__undisplay),
-        ]
-        scroll_controller = Gtk.EventControllerScroll.new(
-            Gtk.EventControllerScrollFlags.BOTH_AXES
-        )
-        scroll_controller.connect("scroll", self.__undisplay)
-        view.add_controller(scroll_controller)
-        key_controller = Gtk.EventControllerKey()
-        key_controller.connect("key-pressed", self.__undisplay)
-        view.add_controller(key_controller)
+    def connect_view(self, view):
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self.__motion)
+        motion.connect("leave", self.__undisplay)
+        view.add_controller(motion)
+
+        scroll = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.BOTH_AXES)
+        scroll.connect("scroll", self.__undisplay)
+        view.add_controller(scroll)
+
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self.__undisplay)
+        view.add_controller(key)
+
+        self.__controllers[view] = [motion, scroll, key]
+        self.__handlers[view] = [view.connect("unmap", self.__undisplay)]
 
     def disconnect_view(self, view):
-        try:
-            for handler in self.__handlers[view]:
+        for controller in self.__controllers.pop(view, []):
+            view.remove_controller(controller)
+        for handler in self.__handlers.pop(view, []):
+            try:
                 view.disconnect(handler)
-            del self.__handlers[view]
-        except KeyError:
-            pass
-        # Hide if the active treeview is going away
+            except Exception:
+                pass
         if view is self.__view:
             self.__undisplay()
-        self.set_transient_for(None)
 
-        if self.__hide_id:
-            GLib.source_remove(self.__hide_id)
-            self.__hide_id = None
-            self.set_visible(False)
+    def __motion(self, controller, x, y):
+        view = controller.get_widget()
+        label = self.__label
+        clabel = self.__clabel
+        x, y = int(x), int(y)
 
-        Gtk.StyleContext.remove_provider_for_display(
-            Gdk.Display.get_default(), self._style_provider
-        )
+        # Modifiers held → hide (avoid fighting with selection/DnD)
+        mask = Gtk.accelerator_get_default_mod_mask()
+        event = controller.get_current_event()
+        state = event.get_modifier_state() if event else 0
+        if state & mask:
+            self.__undisplay()
+            return
+
+        # Overlay scrollbar: hide while over the vertical bar
+        parent = view.get_parent()
+        if parent and isinstance(parent, Gtk.ScrolledWindow):
+            vscrollbar = parent.get_vscrollbar()
+            if vscrollbar is not None and vscrollbar.get_visible():
+                ok = view.translate_coordinates(vscrollbar, float(x), float(y))
+                if ok is not None:
+                    sx, _sy = ok
+                    if 0 <= sx <= vscrollbar.get_width():
+                        self.__undisplay()
+                        return
+
+        try:
+            path, col, cellx, celly = view.get_path_at_pos(x, y)
+        except TypeError:
+            self.__undisplay()
+            return
+
+        col_area = view.get_cell_area(path, col)
+        # TreeView coords are bin-window-relative; convert from widget space
+        bx, by = view.convert_widget_to_bin_window_coords(x, y)
+        if bx < col_area.x:
+            self.__undisplay()
+            return
+
+        # Hide for partially-visible last row
+        if by > view.get_visible_rect().height:
+            self.__undisplay()
+            return
+
+        renderers = col.get_cells()
+        pos = list(zip(map(col.cell_get_position, renderers), renderers, strict=False))
+        pos = [p for p in sorted(pos) if p[0][0] < cellx]
+        if not pos:
+            self.__undisplay()
+            return
+        (render_offset, render_width), renderer = pos[-1]
+
+        if self.__current_renderer == renderer and self.__current_path == path:
+            return
+
+        if not isinstance(renderer, Gtk.CellRendererText):
+            self.__undisplay()
+            return
+
+        ellipsize = renderer.get_property("ellipsize")
+        if ellipsize == Pango.EllipsizeMode.END:
+            expand_left = False
+        elif ellipsize == Pango.EllipsizeMode.MIDDLE:
+            expand_left = bx > col_area.x + render_offset + render_width / 2
+        elif ellipsize == Pango.EllipsizeMode.START:
+            expand_left = True
+        else:
+            self.__undisplay()
+            return
+
+        if renderer.props.editing:
+            self.__undisplay()
+            return
+
+        model = view.get_model()
+        col.cell_set_cell_data(model, model.get_iter(path), False, False)
+
+        markup = getattr(renderer, "markup", None)
+        if markup is None:
+            text = renderer.get_property("text")
+
+            def set_text(lbl):
+                lbl.set_text(text or "")
+        else:
+            if isinstance(markup, int):
+                markup = model[path][markup]
+
+            def set_text(lbl):
+                lbl.set_markup(markup or "")
+
+        render_xpad = renderer.get_property("xpad") or 0
+        MIN_HINT_X_PAD = 4
+        extra_xpad = max(0, MIN_HINT_X_PAD - render_xpad)
+
+        label.set_margin_start(render_xpad + extra_xpad)
+        label.set_margin_end(render_xpad + extra_xpad)
+        set_text(clabel)
+        clabel.set_margin_start(render_xpad)
+        clabel.set_margin_end(render_xpad)
+        # Force layout; measure natural width of full text
+        layout = clabel.get_layout()
+        label_width = layout.get_pixel_size()[0] if layout else 0
+        label_width += render_xpad
+
+        max_width = col_area.width
+        if render_width + render_offset > max_width:
+            render_width = max_width - render_offset
+
+        if label_width < render_width:
+            self.__undisplay()
+            return
+
+        bg_area = view.get_background_area(path, None)
+        # Pointing rect in parent (view) coordinates for the truncated cell
+        cell_x = col_area.x + render_offset
+        cell_y = bg_area.y
+        wx, wy = view.convert_bin_window_to_widget_coords(cell_x, cell_y)
+        if expand_left:
+            wx -= label_width - render_width
+
+        w = label_width + extra_xpad * 2
+        h = bg_area.height
+        if w < render_width:
+            self.__undisplay()
+            return
+
+        if self.__current_renderer and self.__edit_id:
+            try:
+                self.__current_renderer.disconnect(self.__edit_id)
+            except Exception:
+                pass
+
+        self.__view = view
+        self.__current_renderer = renderer
+        self.__edit_id = renderer.connect("editing-started", self.__undisplay)
+        self.__current_path = path
+        self.__current_col = col
+
+        set_text(label)
+        label.set_ellipsize(Pango.EllipsizeMode.NONE)
+        label.set_size_request(w, h)
+
+        parent = self.get_parent()
+        if parent is not None and parent is not view:
+            self.unparent()
+            parent = None
+        if parent is None:
+            self.set_parent(view)
+
+        rect = Gdk.Rectangle()
+        rect.x = int(wx)
+        rect.y = int(wy)
+        rect.width = max(int(render_width), 1)
+        rect.height = max(int(h), 1)
+        self.set_pointing_to(rect)
+        # Sit on top of the cell rather than below it
+        self.set_offset(0, -max(int(h), 1) // 2 if h else 0)
+        self.set_position(Gtk.PositionType.BOTTOM)
+        self.popup()
 
     def __undisplay(self, *args, **kwargs):
         if not self.__view:
             return
 
         if self.__current_renderer and self.__edit_id:
-            self.__current_renderer.disconnect(self.__edit_id)
+            try:
+                self.__current_renderer.disconnect(self.__edit_id)
+            except Exception:
+                pass
         self.__current_renderer = self.__edit_id = None
         self.__current_path = self.__current_col = None
         self.__view = None
-
-        self.__hide_id = None
-        self.set_visible(False)
+        self.popdown()
 
 
 class DragScroll:
@@ -151,13 +286,23 @@ class DragScroll:
     Call scroll_motion in the 'drag-motion' handler and
     scroll_disable in the 'drag-leave' handler.
 
+    Runtime host is a Gtk.TreeView; attribute annotations keep static
+    checkers (Pyrefly/mypy) aware of the mixed-in TreeView API.
     """
 
-    __scroll_delay = None
-    __scroll_periodic = None
-    __scroll_args = (0, 0, 0, 0)
-    __scroll_length = 0
-    __scroll_last = None
+    # Provided by Gtk.TreeView / BaseView when mixed in
+    convert_widget_to_tree_coords: Any
+    convert_bin_window_to_widget_coords: Any
+    scroll_to_point: Any
+    set_drag_dest: Any
+    get_visible_rect: Any
+    create_pango_layout: Any
+
+    __scroll_delay: int | None = None
+    __scroll_periodic: int | None = None
+    __scroll_args: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    __scroll_length: float = 0.0
+    __scroll_last: float | None = None
 
     def __enable_scroll(self):
         """Start scrolling if it hasn't already"""
@@ -208,7 +353,7 @@ class DragScroll:
         if self.__scroll_delay is not None:
             GLib.source_remove(self.__scroll_delay)
             self.__scroll_delay = None
-        self.__scroll_length = 0
+        self.__scroll_length = 0.0
         self.__scroll_last = None
 
     def scroll_motion(self, x, y):
@@ -229,14 +374,14 @@ class DragScroll:
         reference = max(self.create_pango_layout("").get_pixel_size()[1], 1)
 
         # If the drag is in the scroll area, adjust the speed
-        scroll_offset = int(reference * 3)
+        scroll_offset = reference * 3
         in_upper_scroll = start < y < start + scroll_offset
         in_lower_scroll = y > end - scroll_offset
 
         # thanks TI200
-        def accel(x):
+        def accel(offset):
             try:
-                return int(1.1 ** (x * 12 / reference)) - (x / reference)
+                return int(1.1 ** (offset * 12 / reference)) - (offset / reference)
             except ValueError:
                 return 0
 
@@ -253,10 +398,10 @@ class DragScroll:
         in_upper_full = start < y < start + full_offset
         in_lower_full = y > end - full_offset
         if not in_upper_full and not in_lower_full:
-            self.__scroll_length = 0
+            self.__scroll_length = 0.0
 
         # For the periodic scroll function
-        self.__scroll_args = (x, y, diff, reference)
+        self.__scroll_args = (float(x), float(y), float(diff), float(reference))
 
         # The area to trigger a scroll is a bit smaller
         trigger_offset = int(reference * 2.5)
@@ -326,36 +471,22 @@ class BaseView(Gtk.TreeView):
             except Exception:
                 pass
 
-    def do_key_press_event(self, event):
-        if is_accel(event, "space", "KP_Space"):
-            return False
-        return Gtk.TreeView.do_key_press_event(self, event)
-
     def __key_pressed(self, controller, keyval, keycode, state):
-        # GTK4: EventControllerKey.key-pressed has different signature
-        # Create event-like object for compatibility
-        class KeyEvent:
-            def __init__(self, keyval, keycode, state):
-                self.type = Gdk.EventType.KEY_PRESS
-                self.keyval = keyval
-                self.keycode = keycode
-                self.state = state
-
-            def get_state(self):
-                return self.state
-
-        event = KeyEvent(keyval, keycode, state)
+        # Let default space/enter activate; only handle tree expand/collapse.
+        if is_accel_pressed(keyval, state, "space", "KP_Space"):
+            return False
 
         def get_first_selected():
             selection = self.get_selection()
             model, paths = selection.get_selected_rows()
             return paths and paths[0] or None
 
-        if is_accel(event, "Right") or is_accel(event, "<Primary>Right"):
+        if is_accel_pressed(keyval, state, "Right", "<Primary>Right"):
             first = get_first_selected()
             if first:
                 self.expand_row(first, False)
-        elif is_accel(event, "Left") or is_accel(event, "<Primary>Left"):
+                return True
+        elif is_accel_pressed(keyval, state, "Left", "<Primary>Left"):
             first = get_first_selected()
             if first:
                 if self.row_expanded(first):
@@ -367,6 +498,8 @@ class BaseView(Gtk.TreeView):
                     parent = model.iter_parent(model.get_iter(first))
                     if parent:
                         self.set_cursor(model.get_path(parent))
+                return True
+        return False
 
     def remove_paths(self, paths):
         """Remove rows and restore the selection if it got removed"""
@@ -840,78 +973,78 @@ class HintedTreeView(BaseView):
 
 
 class _TreeViewColumnLabel(Gtk.Label):
-    """A label which fades  into the background at the end; for use
-    only in TreeViewColumns.
+    """Column-header label that fades into the background at the clip edge.
 
-    The hackery with using the parent's allocation is needed because
-    the label always gets the allocation it has requested, ignoring
-    the actual width of the column header.
+    The label often measures wider than the header button; paint with a
+    horizontal alpha fade so text does not hard-clip against the sort arrow.
     """
 
-    def do_draw(self, ctx):
-        alloc = self.get_allocation()
-        # in case there are no parents use the same alloc which should
-        # result in no custom drawing.
+    def do_snapshot(self, snapshot):
+        width = self.get_width()
+        height = self.get_height()
+        if width <= 0 or height <= 0:
+            return Gtk.Label.do_snapshot(self, snapshot)
+
+        # Available header width from ancestor allocations (button/box).
         p1 = self.get_parent() or self
         p2 = p1.get_parent() or p1
         p3 = p2.get_parent() or p2
-        p2_alloc = p2.get_allocation()
-        p3_alloc = p3.get_allocation()
+        p2_w = p2.get_width()
+        p1_x = 0.0
+        ok = self.translate_coordinates(p2, 0.0, 0.0)
+        if ok is not None:
+            p1_x = float(ok[0])
+        p2_x_in_p3 = 0.0
+        ok2 = p2.translate_coordinates(p3, 0.0, 0.0)
+        if ok2 is not None:
+            p2_x_in_p3 = float(ok2[0])
+        available_width = int(p2_w - abs(p1_x) + p2_x_in_p3)
 
-        # remove the space needed by the arrow and add the space
-        # added by the padding so we only start drawing when we clip
-        # the text directly
-        available_width = (
-            p2_alloc.width - abs(p2_alloc.x - alloc.x) + (p2_alloc.x - p3_alloc.x)
-        )
+        if width <= available_width or available_width <= 0:
+            return Gtk.Label.do_snapshot(self, snapshot)
 
-        if alloc.width <= available_width:
-            return Gtk.Label.do_draw(self, ctx)
+        _, nat_h, _, _ = self.measure(Gtk.Orientation.VERTICAL, -1)
+        req_height = nat_h or height
+        gradient_width = min(req_height * 0.8, float(available_width))
+        aw = float(available_width)
+        w = float(width)
+        h = float(height)
 
-        req_height = self.get_requisition().height
-        w, h = alloc.width, alloc.height
-        aw = available_width
+        c_clear = Gdk.RGBA()
+        c_clear.red = c_clear.green = c_clear.blue = 0
+        c_clear.alpha = 0
+        c_solid = Gdk.RGBA()
+        c_solid.red = c_solid.green = c_solid.blue = c_solid.alpha = 1.0
 
-        # possible when adding new columns.... create_similar will fail
-        # in this case below, so just skip.
-        if min(w, h) < 0:
-            return Gtk.Label.do_draw(self, ctx)
-
-        surface = ctx.get_target()
-
-        # draw label to image surface
-        label_surface = surface.create_similar(cairo.CONTENT_COLOR_ALPHA, w, h)
-        label_ctx = cairo.Context(label_surface)
-        res = Gtk.Label.do_draw(self, label_ctx)
-
-        # create a gradient.
-        # make the gradient width depend roughly on the font size
-        gradient_width = min(req_height * 0.8, aw)
+        def stop(offset, color):
+            s = Gsk.ColorStop()
+            s.offset = offset
+            s.color = color
+            return s
 
         if self.get_direction() == Gtk.TextDirection.RTL:
-            start = w - aw
-            end = start + gradient_width
+            # Transparent → solid across the left edge of the visible region
+            g0 = max(w - aw, 0.0)
+            g1 = g0 + gradient_width
+            start = Graphene.Point().init(g0, 0)
+            end = Graphene.Point().init(g1, 0)
+            stops = [stop(0.0, c_clear), stop(1.0, c_solid)]
         else:
-            end = aw - gradient_width
-            start = end + gradient_width
+            # Solid → transparent across the right edge of the visible region
+            g0 = max(aw - gradient_width, 0.0)
+            g1 = aw
+            start = Graphene.Point().init(g0, 0)
+            end = Graphene.Point().init(g1, 0)
+            stops = [stop(0.0, c_solid), stop(1.0, c_clear)]
 
-        pat = cairo.LinearGradient(start, 0, end, 0)
-        pat.add_color_stop_rgba(0, 0, 0, 0, 0)
-        pat.add_color_stop_rgba(gradient_width, 1, 1, 1, 1)
+        bounds = Graphene.Rect().init(0, 0, w, h)
 
-        # gradient surface
-        grad_surface = surface.create_similar(cairo.CONTENT_COLOR_ALPHA, w, h)
-        imgctx = cairo.Context(grad_surface)
-        imgctx.set_source(pat)
-        imgctx.paint()
-
-        # draw label using the gradient as the alpha channel mask
-        ctx.save()
-        ctx.set_source_surface(label_surface)
-        ctx.mask_surface(grad_surface)
-        ctx.restore()
-
-        return res
+        # Mask source (alpha gradient), then paint the label as the masked child.
+        snapshot.push_mask(Gsk.MaskMode.ALPHA)
+        snapshot.append_linear_gradient(bounds, start, end, stops)
+        snapshot.pop()
+        Gtk.Label.do_snapshot(self, snapshot)
+        snapshot.pop()
 
 
 class TreeViewColumn(Gtk.TreeViewColumn):

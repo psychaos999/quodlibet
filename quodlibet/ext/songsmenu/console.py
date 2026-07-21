@@ -172,7 +172,9 @@ class PythonConsole(Gtk.ScrolledWindow):
         self.stderr = OutFile(self, self.error)
 
         # Signals
-        self.view.connect("key-press-event", self.__key_press_event_cb)
+        from quodlibet import qltk
+
+        qltk.connect_key_pressed(self.view, self.__key_press_event_cb)
         buffer.connect("mark-set", self.__mark_set_cb)
 
     def __key_press_event_cb(self, view, event):
@@ -181,8 +183,9 @@ class PythonConsole(Gtk.ScrolledWindow):
 
         if event.keyval == Gdk.KEY_d and event_state == Gdk.ModifierType.CONTROL_MASK:
             self.close()
+            return True
 
-        elif event.keyval == Gdk.KEY_Return and (
+        if event.keyval == Gdk.KEY_Return and (
             event_state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK)
         ):
             # Get the command
@@ -212,7 +215,7 @@ class PythonConsole(Gtk.ScrolledWindow):
             GLib.idle_add(self.scroll_to_end)
             return True
 
-        elif event.keyval == Gdk.KEY_Return:
+        if event.keyval == Gdk.KEY_Return:
             # Get the marks
             buffer = view.get_buffer()
             lin_mark = buffer.get_mark("input-line")
@@ -266,7 +269,7 @@ class PythonConsole(Gtk.ScrolledWindow):
             GLib.idle_add(self.scroll_to_end)
             return True
 
-        elif event.keyval == Gdk.KEY_c and event_state == Gdk.ModifierType.CONTROL_MASK:
+        if event.keyval == Gdk.KEY_c and event_state == Gdk.ModifierType.CONTROL_MASK:
             # Get the marks
             buffer = view.get_buffer()
             lin_mark = buffer.get_mark("input-line")
@@ -287,21 +290,21 @@ class PythonConsole(Gtk.ScrolledWindow):
             GLib.idle_add(self.scroll_to_end)
             return True
 
-        elif event.keyval == Gdk.KEY_KP_Down or event.keyval == Gdk.KEY_Down:
+        if event.keyval == Gdk.KEY_KP_Down or event.keyval == Gdk.KEY_Down:
             # Next entry from history
             view.emit_stop_by_name("key_press_event")
             self.history_down()
             GLib.idle_add(self.scroll_to_end)
             return True
 
-        elif event.keyval == Gdk.KEY_KP_Up or event.keyval == Gdk.KEY_Up:
+        if event.keyval == Gdk.KEY_KP_Up or event.keyval == Gdk.KEY_Up:
             # Previous entry from history
             view.emit_stop_by_name("key_press_event")
             self.history_up()
             GLib.idle_add(self.scroll_to_end)
             return True
 
-        elif (
+        if (
             event.keyval == Gdk.KEY_KP_Left
             or event.keyval == Gdk.KEY_Left
             or event.keyval == Gdk.KEY_BackSpace
@@ -311,7 +314,7 @@ class PythonConsole(Gtk.ScrolledWindow):
             cur = buffer.get_iter_at_mark(buffer.get_insert())
             return inp.compare(cur) == 0
 
-        elif event.keyval == Gdk.KEY_Home:
+        if event.keyval == Gdk.KEY_Home:
             # Go to the begin of the command instead of the begin of the line
             buffer = view.get_buffer()
             inp = buffer.get_iter_at_mark(buffer.get_mark("input"))
@@ -322,7 +325,7 @@ class PythonConsole(Gtk.ScrolledWindow):
             return True
 
         # completion - Tab, Shift+Tab, Ctrl+Space , Ctrl+Shift+Space
-        elif (event.keyval == Gdk.KEY_Tab or event.keyval == Gdk.KEY_ISO_Left_Tab) or (
+        if (event.keyval == Gdk.KEY_Tab or event.keyval == Gdk.KEY_ISO_Left_Tab) or (
             event.keyval == Gdk.KEY_space
             and (
                 event_state

@@ -2,10 +2,75 @@ GTK4 Migration Status
 =====================
 
 **Branch**: `gtk4`
-**Last Updated**: 2026-07-05
+**Last Updated**: 2026-07-21
 **Test Results**: ~4655 passed; remaining failures are the pre-existing
 order-dependent set (below), all passing in isolation.
 
+libadwaita foundation (2026-07-21)
+----------------------------------
+
+Required dependency: **libadwaita >= 1.4** (`gir1.2-adw-1`).
+
+- `Adw.init()` after `Gtk.init_check()` in `_init_gtk()`
+- `qltk.Window` subclasses `Adw.Window`; content via `set_content`
+  (`set_child` / `add` aliases kept). Header bars prefer `Adw.HeaderBar`.
+- `AboutDialog` → `Adw.AboutDialog` (blocking `run()` kept for call sites)
+- Theme Switcher dark mode → `Adw.StyleManager.color-scheme`
+- Packaging/docs/flake/CI updated for libadwaita
+
+libadwaita chrome + dialogs (2026-07-21, continued)
+--------------------------------------------------
+
+- **Preferences**: `PreferencesWindow` is `_Unique` + `Adw.PreferencesWindow`
+  - tracking. Existing page `Gtk.Box` widgets hosted in
+  `Adw.PreferencesPage` / `PreferencesGroup` (controls unchanged).
+  `set_page(name)` / `get_page_contents()` keep API for callers/tests.
+- **Main window**: `QuodLibetWindow` uses `Adw.ToolbarView` — menubar +
+  transport as top bars, browser paned as content, status as bottom bar.
+- **Messages**: `qltk.msg.Message` and friends wrap `Adw.AlertDialog` with
+  the old `run()` / `Gtk.ResponseType` API (blocking nested loop).
+- **Unique windows**: `_Unique` registry fixed for subclasses under GTK4
+  (`close-request` clears singleton; per-class `_unique_window`).
+
+Event-controller + packing pass (2026-07-21, continued)
+-----------------------------------------------------
+
+- **`qltk.connect_key_pressed` + `KeyEvent`**: helpers for migrating
+  `key-press-event` handlers; used across main window, browsers (albums,
+  covergrid, collection, paned, tracks), edittags, bookmarks, cbes,
+  data_editors, console.
+- **Clicks/scroll/motion**: edittags middle-paste (`GestureClick`), waveform
+  seekbar (snapshot + GestureClick + Scroll + Motion), cover-download
+  double-click, equalizer right-click reset, animosd dismiss, paned header
+  click, fingerprint search click, tapbpm.
+- **`close-request`**: main (persistent hide), trayicon, appindicator, MPRIS,
+  fingerprint submit (replaces dead `delete-event`).
+- **CoverGrid label**: `width_chars` so GridView multi-columns.
+- **WebImage / ResizeWebImage**: `Gtk.Picture` + `Gdk.Texture` (no tiny icons).
+- **Packing**: tagsfrompath / renamefiles `prepend`→`append` order fixed;
+  gstbe exclusive button pack_start fixed.
+- **HighlightToggleButton**: `do_snapshot` instead of dead `do_draw`.
+
+Still later (see cleanup doc): toasts, SwitchRow rewrite of preference
+controls, virtualised list views, full shim retirement, Gtk.StatusIcon
+scroll/middle-click (StatusIcon is GTK3-only — tray often uses AppIndicator).
+
+Event/draw vfunc cleanup (2026-07-21, continued)
+-----------------------------------------------
+
+- **`TreeViewHints`**: Gtk.Window → non-interactive `Gtk.Popover` +
+  `EventControllerMotion` (widget coords via `convert_widget_to_bin_window_*`).
+- **`_TreeViewColumnLabel`**: dead `do_draw` → `do_snapshot` with
+  `Gsk.MaskMode.ALPHA` linear fade.
+- **animosd `OSDWindow`**: dead `do_draw` → `do_snapshot` + cairo;
+  monitor geometry via `Gdk.Display.get_monitors()`; X11 position via
+  `XMoveWindow` (GTK4 has no `Window.move`). Fixed missing `Gtk` import
+  in `animosd/main.py`.
+- **`BaseView` / `PluginListView`**: dead `do_key_press_event` removed;
+  expand/collapse and space-toggle use `EventControllerKey` +
+  `is_accel_pressed`.
+- **`filesel`**: `connect("draw")` scroll restore → capture adj before
+  model refill + `GLib.idle_add` restore.
 
 SongsMenu → Gio.Menu: LANDED (2026-07-05)
 -----------------------------------------
@@ -43,7 +108,6 @@ not-appended-widgets gap) are fixed. `SongsMenu` is now a real
   Removing them is gated on migrating the widget-based plugin-menu API (separate
   effort; see cleanup doc).
 
-
 Quick Summary
 -------------
 
@@ -51,7 +115,6 @@ The application runs. Core migration is done. All `TODO GTK4:` markers
 have been resolved. Ruff `check` and `format --check` both pass. The
 remaining failures (18) are pre-existing order-dependent tests that
 pass individually; they appear unaffected by GTK4 changes.
-
 
 Remaining Failures (18)
 ------------------------
@@ -71,7 +134,6 @@ lifecycle / cleanup differences not yet investigated:
 - Tray icon (2): test_popup_menu, test_icons
 - MediaServer (2): test_entry_name, test_name_owner (DBus teardown,
   not GTK-related)
-
 
 Recently Landed (2026-06-15)
 ----------------------------
@@ -140,7 +202,6 @@ Earlier (2026-05-16)
   files/dirs, String for remote URIs).
 - Albumart plugin and filesel `DirectoryTree` drop-target restored.
 - Dead VolumeMenu / Unity / Dbusmenu code removed; ruff suite clean.
-
 
 Visual / Layout Regressions (2026-06-27 review)
 -----------------------------------------------
@@ -251,13 +312,12 @@ native:
   slow/legacy paths. The perf payoff is gated on finishing the *native*
   migration, not just making GTK3 idioms compile.
 
-
 Known Limitations (Tracked, Non-Blocking)
 -----------------------------------------
 
-- `TreeViewHints.__motion` is unwired; truncated cell hover-tooltips
-  don't appear. Fixing requires a `Gtk.EventControllerMotion` on each
-  view with widget-coordinate translation.
+- ~~`TreeViewHints.__motion` unwired~~ — **done** (2026-07-21):
+  `TreeViewHints` is a non-interactive `Gtk.Popover` driven by
+  `EventControllerMotion`; truncated-cell hover expansion restored.
 - macOS native menu bar integration not wired up (GtkosxApplication
   parity gap under GTK4).
 - M3U/PLS URL import via DnD to playlist browser is deferred.
@@ -278,7 +338,6 @@ Known Limitations (Tracked, Non-Blocking)
   cross-cutting effort — do not island-rewrite individual menus.
 - `SongListPaned` drag-to-expand-queue UX is dropped (relied on
   `Gtk.Paned.get_handle_window()` which is gone in GTK4).
-
 
 Test Follow-ups (from 2026-06-15 review)
 ----------------------------------------

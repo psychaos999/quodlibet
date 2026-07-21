@@ -38,15 +38,12 @@ class MaskedBox(Gtk.Box):
         view.set_headers_visible(False)
         self.view = view
 
-        menu = Gtk.PopoverMenu()
-        unhide_item = qltk.MenuItem(_("Unhide"), Icons.LIST_ADD)
-        connect_obj(unhide_item, "activate", self.__unhide, view, library)
-        menu.append(unhide_item)
-
-        remove_item = qltk.MenuItem(_("_Remove"), Icons.LIST_REMOVE)
-        connect_obj(remove_item, "activate", self.__remove, view, library)
-        menu.append(remove_item)
-
+        menu = qltk.gio_action_popover(
+            [
+                (_("Unhide"), lambda: self.__unhide(view, library)),
+                (_("_Remove"), lambda: self.__remove(view, library)),
+            ]
+        )
         view.connect("popup-menu", self.__popup, menu)
 
         sw = Gtk.ScrolledWindow()

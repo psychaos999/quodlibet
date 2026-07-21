@@ -70,6 +70,7 @@
               LD_LIBRARY_PATH = lib.makeLibraryPath [
                 glib.out
                 gtk4
+                libadwaita
                 pango.out
                 fontconfig.lib
                 cairo
@@ -93,6 +94,7 @@
                 gtksourceview5
                 kakasi
                 # keybinder3 and libappindicator are GTK3-only
+                libadwaita
                 libmodplug
                 libnotify
                 librsvg

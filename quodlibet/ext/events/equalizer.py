@@ -420,8 +420,11 @@ class Equalizer(EventPlugin):
             adj = Gtk.Adjustment.new(levels[i], -24.0, 12.0, 0.5, 3, 0)
             adj.connect("value-changed", set_band, i)
             adjustments.append(adj)
-            hs = Gtk.HScale(adjustment=adj)
-            hs.connect("button-press-event", self.__rightclick)
+            hs = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
+            click = Gtk.GestureClick()
+            click.set_button(Gdk.BUTTON_SECONDARY)
+            click.connect("pressed", self.__rightclick_gesture, adj)
+            hs.add_controller(click)
             hs.set_draw_value(True)
             hs.set_value_pos(Gtk.PositionType.RIGHT)
             hs.connect("format-value", lambda s, v: _("%.1f dB") % v)
@@ -582,6 +585,6 @@ class Equalizer(EventPlugin):
         main_vbox.append(frame)
         return main_vbox
 
-    def __rightclick(self, hs, event):
-        if event.triggers_context_menu():
-            hs.set_value(0)
+    def __rightclick_gesture(self, gesture, n_press, x, y, adj):
+        adj.set_value(0.0)
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)

@@ -21,6 +21,7 @@ from quodlibet import app, get_user_dir, get_cache_dir
 from quodlibet.util import fver, escape
 from quodlibet.qltk import (
     gtk_version,
+    adw_version,
     pygobject_version,
     get_backend_name,
     get_font_backend_name,
@@ -102,7 +103,12 @@ class AppInformation(EventPlugin):
 
         grid.insert_row(row)
         l = label_title(_("Audio Backend"))
-        v = label_value(f"{app.player.name}\n{app.player.version_info}")
+        player = app.player
+        if player is not None:
+            backend_info = f"{player.name}\n{player.version_info}"
+        else:
+            backend_info = _("Not available")
+        v = label_value(backend_info)
         grid.attach(l, 0, row, 1, 1)
         grid.attach(v, 1, row, 1, 1)
         row += 1
@@ -122,10 +128,17 @@ class AppInformation(EventPlugin):
         row += 1
 
         grid.insert_row(row)
-        l = label_title("Gtk+")
+        l = label_title("GTK")
         v = label_value(
             f"{fver(gtk_version)} ({get_backend_name()}, {get_font_backend_name()})"
         )
+        grid.attach(l, 0, row, 1, 1)
+        grid.attach(v, 1, row, 1, 1)
+        row += 1
+
+        grid.insert_row(row)
+        l = label_title("libadwaita")
+        v = label_value(fver(adw_version))
         grid.attach(l, 0, row, 1, 1)
         grid.attach(v, 1, row, 1, 1)
         row += 1

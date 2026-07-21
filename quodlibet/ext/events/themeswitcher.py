@@ -9,7 +9,7 @@
 import warnings
 import os
 
-from gi.repository import Gtk, Gio, GLib
+from gi.repository import Gtk, Gio, GLib, Adw
 
 from quodlibet import _
 from quodlibet import qltk
@@ -39,7 +39,10 @@ class ThemeSwitcher(EventPlugin):
 
         settings = Gtk.Settings.get_default()
         self.__default_theme = settings.get_property("gtk-theme-name")
-        self.__default_dark = settings.get_property("gtk-application-prefer-dark-theme")
+        # libadwaita manages dark preference via StyleManager, not GtkSettings
+        style = Adw.StyleManager.get_default()
+        self.__default_scheme = style.get_color_scheme()
+        self.__default_dark = style.get_dark()
 
     def PluginPreferences(self, *args):
         self.__init_defaults()
@@ -48,7 +51,7 @@ class ThemeSwitcher(EventPlugin):
         label = Gtk.Label(label=_("_Theme:"))
         combo = Gtk.ComboBoxText()
 
-        theme = config.get("plugins", self.CONFIG_THEME, None)
+        theme = config.get("plugins", self.CONFIG_THEME, "")
 
         combo.append_text(_("Default Theme"))
         themes = self.__get_themes()
@@ -105,7 +108,7 @@ class ThemeSwitcher(EventPlugin):
 
             major = qltk.gtk_version[0]
             minor = qltk.gtk_version[1]
-            names = ["gtk-%d.%d" % (major, m) for m in range(minor, -1, -1)]
+            names = [f"gtk-{major}.{m}" for m in range(minor, -1, -1)]
             for name in names:
                 if os.path.isdir(os.path.join(path, name)):
                     return True
@@ -145,10 +148,15 @@ class ThemeSwitcher(EventPlugin):
     def __set_dark(self, value):
         if not self.__enabled:
             return
-        settings = Gtk.Settings.get_default()
+        style = Adw.StyleManager.get_default()
         if value is None:
-            value = self.__default_dark
-        settings.set_property("gtk-application-prefer-dark-theme", value)
+            style.set_color_scheme(self.__default_scheme)
+            return
+        # Prefer (don't force) so the desktop scheme can still win when unset
+        if value:
+            style.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+        else:
+            style.set_color_scheme(Adw.ColorScheme.PREFER_LIGHT)
 
     def __get_dark(self):
         return config.getboolean("plugins", self.CONFIG_DARK, self.__default_dark)
@@ -157,12 +165,12 @@ class ThemeSwitcher(EventPlugin):
         self.__enabled = True
         self.__init_defaults()
 
-        theme = config.get("plugins", self.CONFIG_THEME, None)
+        theme = config.get("plugins", self.CONFIG_THEME, "")
         self.__set_theme(theme)
 
         self.__set_dark(self.__get_dark())
 
     def disabled(self):
-        self.__set_theme(None)
+        self.__set_theme("")
         self.__set_dark(None)
         self.__enabled = False

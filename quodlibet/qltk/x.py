@@ -361,9 +361,12 @@ class CellRendererPixbuf(Gtk.CellRendererPixbuf):
         super().__init__(*args, **kwargs)
 
 
-class WebImage(Gtk.Image):
-    """A Gtk.Image which loads the image over HTTP in the background
+class WebImage(Gtk.Picture):
+    """A Gtk.Picture which loads the image over HTTP in the background
     and displays it when available.
+
+    Uses Picture (not Image) so arbitrary-size covers render at natural size
+    under GTK4 rather than being forced to icon size.
     """
 
     def __init__(self, url, width=-1, height=-1):
@@ -374,14 +377,26 @@ class WebImage(Gtk.Image):
             height (int): a height to reserve for the image or -1
         """
 
-        super().__init__()
+        super().__init__(content_fit=Gtk.ContentFit.CONTAIN)
+        self._width = width
+        self._height = height
 
         self._cancel = Cancellable()
         call_async(self._fetch_image, self._cancel, self._finished, (url,))
         self.connect("destroy", self._on_destroy)
-        self.set_size_request(width, height)
-        self.set_from_icon_name("image-loading")
-        self.set_icon_size(Gtk.IconSize.LARGE)
+        if width > 0 or height > 0:
+            self.set_size_request(width, height)
+        # Placeholder while loading
+        self.set_paintable(
+            Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).lookup_icon(
+                "image-loading",
+                None,
+                48,
+                1,
+                Gtk.TextDirection.NONE,
+                0,
+            )
+        )
 
     def _on_destroy(self, *args):
         self._cancel.cancel()
@@ -404,10 +419,22 @@ class WebImage(Gtk.Image):
 
     def _finished(self, pixbuf):
         if pixbuf is None:
-            self.set_from_icon_name("image-missing")
-            self.set_icon_size(Gtk.IconSize.LARGE)
-        else:
-            self.set_from_pixbuf(pixbuf)
+            self.set_paintable(
+                Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).lookup_icon(
+                    "image-missing",
+                    None,
+                    48,
+                    1,
+                    Gtk.TextDirection.NONE,
+                    0,
+                )
+            )
+            return
+        if self._width > 0 or self._height > 0:
+            w = self._width if self._width > 0 else pixbuf.get_width()
+            h = self._height if self._height > 0 else pixbuf.get_height()
+            pixbuf = pixbuf.scale_simple(w, h, GdkPixbuf.InterpType.BILINEAR)
+        self.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
 
 
 class HighlightToggleButton(Gtk.ToggleButton):
@@ -470,6 +497,7 @@ class HighlightToggleButton(Gtk.ToggleButton):
             )
             self._provider = provider
 
-    def do_draw(self, context):
+    def do_snapshot(self, snapshot):
+        # GTK4: do_draw is never called; refresh highlight on paint
         self._update_provider()
-        return Gtk.ToggleButton.do_draw(self, context)
+        Gtk.ToggleButton.do_snapshot(self, snapshot)

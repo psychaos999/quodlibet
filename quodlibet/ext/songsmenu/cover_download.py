@@ -78,7 +78,7 @@ class Config:
     jpg_quality = IntConfProp(plugin_config, "jpeg_quality", 95)
 
 
-class ResizeWebImage(Gtk.Image):
+class ResizeWebImage(Gtk.Picture):
     """A resizeable widget that can receive loaded images, and save them"""
 
     __gsignals__ = {
@@ -89,7 +89,7 @@ class ResizeWebImage(Gtk.Image):
     }
 
     def __init__(self, url, config: Config, cancellable=None):
-        super().__init__()
+        super().__init__(content_fit=Gtk.ContentFit.CONTAIN)
         self.config = config
         self.url = url
         self.cancellable = cancellable
@@ -105,6 +105,7 @@ class ResizeWebImage(Gtk.Image):
         )
         self.set_size_request(config.preview_size, config.preview_size)
         self._pixbuf = None
+        self.set_can_shrink(True)
 
     @property
     def extension(self):
@@ -144,7 +145,7 @@ class ResizeWebImage(Gtk.Image):
         resized = self._pixbuf.scale_simple(
             new_size, new_size, GdkPixbuf.InterpType.BILINEAR
         )
-        self.set_from_pixbuf(resized)
+        self.set_paintable(Gdk.Texture.new_for_pixbuf(resized))
         self.set_size_request(new_size, new_size)
 
     def save_image(self, fsn):
@@ -281,15 +282,14 @@ class CoverArtWindow(qltk.Dialog, PersistentWindowMixin):
         reveal.add(eb)
         frame.add(reveal)
         frame.set_label_align(0.5, 1.0)
-        reveal.connect("button-press-event", self._on_click)
+        click = Gtk.GestureClick()
+        click.set_button(Gdk.BUTTON_PRIMARY)
+        click.connect("pressed", self._on_click_gesture)
+        reveal.add_controller(click)
         return frame
 
-    def _on_click(self, view, event):
-        # TODO: less hacky way to detect double-click
-        if (
-            event.button == Gdk.BUTTON_PRIMARY
-            and event.type != Gdk.EventType.BUTTON_PRESS
-        ):
+    def _on_click_gesture(self, gesture, n_press, x, y):
+        if n_press >= 2:
             self.__save(None)
             self.close()
 

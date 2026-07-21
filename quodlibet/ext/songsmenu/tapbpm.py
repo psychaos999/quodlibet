@@ -6,7 +6,7 @@
 # the Free Software Foundation; either version 2 of the License, or
 # (at your option) any later version.
 
-from gi.repository import Gdk, Gtk
+from gi.repository import Gtk
 
 from quodlibet import _
 from quodlibet.plugins.songsmenu import SongsMenuPlugin
@@ -40,8 +40,11 @@ class TapBpmPanel(Gtk.Box):
         self.append(box)
 
         self.tap_btn = Gtk.Button(label=_("Tap"))
-        self.tap_btn.connect("button-press-event", self.tap)
-        self.tap_btn.connect("key-press-event", self.key_tap)
+        # GTK4: GestureClick for precise press time; also fire on activate/space
+        click = Gtk.GestureClick()
+        click.connect("pressed", self._tap_pressed)
+        self.tap_btn.add_controller(click)
+        self.tap_btn.connect("clicked", self._tap_clicked)
         self.append(self.tap_btn)
 
         self.init_tap()
@@ -65,17 +68,19 @@ class TapBpmPanel(Gtk.Box):
         # Give focus back to the tap button even if reset was pressed
         self.tap_btn.grab_focus()
 
-    def tap(self, widget, event):
-        self.count_tap(event.time)
-        self.update()
+    def _tap_pressed(self, gesture, n_press, x, y):
+        from gi.repository import GLib
 
-    def key_tap(self, widget, event):
-        if event.keyval != Gdk.KEY_space and event.keyval != Gdk.KEY_Return:
-            return False
-
-        self.count_tap(event.time)
+        self.count_tap(GLib.get_monotonic_time() // 1000)
         self.update()
-        return True
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+
+    def _tap_clicked(self, widget):
+        # Activated via keyboard (space/enter) without a GestureClick press
+        from gi.repository import GLib
+
+        self.count_tap(GLib.get_monotonic_time() // 1000)
+        self.update()
 
     def reset(self):
         self.init_tap()

@@ -13,7 +13,6 @@ from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Gsk
 
 from quodlibet import _
 from quodlibet import app
-from quodlibet import config
 from quodlibet import util
 from quodlibet.pattern import Pattern
 from quodlibet.qltk import Icons
@@ -145,11 +144,11 @@ class SystemTray(BaseIndicator):
         self.__embedded_changed(self._icon)
         self._icon.connect("popup-menu", self.__popup_menu)
         self._icon.connect("activate", self.__button_left)
+        # GTK4: StatusIcon is a stub — scroll/middle-click are unavailable
+        # (signals are silently dropped by the connect shim). AppIndicator is
+        # the supported tray path and does not need them.
 
-        self._icon.connect("scroll-event", self.__scroll)
-        self._icon.connect("button-press-event", self.__button_middle)
-
-        self.__w_sig_del = app.window.connect("delete-event", self.__window_delete)
+        self.__w_sig_del = app.window.connect("close-request", self.__window_delete)
 
         # If after the main loop is idle and 3 seconds have passed
         # the tray icon isn't embedded, assume it won't be and unhide
@@ -290,7 +289,7 @@ class SystemTray(BaseIndicator):
 
         return size == req_size and self.__pixbuf is not None
 
-    def __window_delete(self, win, event):
+    def __window_delete(self, win):
         if self.__user_can_unhide() and pconfig.getboolean("window_hide"):
             self.__hide_window()
             return True
@@ -310,45 +309,8 @@ class SystemTray(BaseIndicator):
         else:
             self.__show_window()
 
-    def __button_middle(self, widget, event, _last_timestamp=[0]):  # noqa
-        if (
-            event.type == Gdk.EventType.BUTTON_PRESS
-            and event.button == Gdk.BUTTON_MIDDLE
-        ):
-            if self.__destroy_win32_menu():
-                return
-            # work around gnome shell (3.14) bug, it sends middle clicks twice
-            # with the same timestamp, so ignore the second event
-            if event.time == _last_timestamp[0]:
-                return
-            _last_timestamp[0] = event.time
-            self.__play_pause()
-
     def __play_pause(self, *args):
         app.player.playpause()
-
-    def __scroll(self, widget, event):
-        state = event.get_state()
-        try:
-            state ^= pconfig.getboolean("modifier_swap")
-        except config.Error:
-            pass
-
-        Dir = Gdk.ScrollDirection  # noqa
-        if event.direction in [Dir.LEFT, Dir.RIGHT]:
-            state = Gdk.ModifierType.SHIFT_MASK
-
-        player = app.player
-        if state & Gdk.ModifierType.SHIFT_MASK:
-            if event.direction in [Dir.UP, Dir.LEFT]:
-                player.previous()
-            elif event.direction in [Dir.DOWN, Dir.RIGHT]:
-                player.next()
-        else:
-            if event.direction in [Dir.UP, Dir.LEFT]:
-                player.volume += 0.05
-            elif event.direction in [Dir.DOWN, Dir.RIGHT]:
-                player.volume -= 0.05
 
     def __destroy_win32_menu(self):
         """Returns True if current action should only hide the menu"""

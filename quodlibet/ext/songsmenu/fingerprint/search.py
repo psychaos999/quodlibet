@@ -125,7 +125,10 @@ class ResultView(AllTreeView):
         column.set_min_width(60)
         self.append_column(column)
 
-        self.connect("button-press-event", self.__button_press, column)
+        click = Gtk.GestureClick()
+        click.set_button(Gdk.BUTTON_PRIMARY)
+        click.connect("pressed", self.__button_press_gesture, column)
+        self.add_controller(click)
 
         render = Gtk.CellRendererText()
         render.set_property("ellipsize", Pango.EllipsizeMode.END)
@@ -202,22 +205,14 @@ class ResultView(AllTreeView):
                 column.set_min_width(50)
         self.set_fixed_height_mode(True)
 
-    def __button_press(self, view, event, edit_column):
-        x, y = map(int, [event.x, event.y])
+    def __button_press_gesture(self, gesture, n_press, x, y, edit_column):
+        view = gesture.get_widget()
         try:
-            path, col, cellx, celly = view.get_path_at_pos(x, y)
+            path, col, cellx, celly = view.get_path_at_pos(int(x), int(y))
         except TypeError:
-            return False
+            return None
 
-        # header clicks go to the first cell otherwise
-        if event.window is not view.get_bin_window():
-            return False
-
-        if (
-            event.button == Gdk.BUTTON_PRIMARY
-            and event.type == Gdk.EventType.BUTTON_PRESS
-            and col == edit_column
-        ):
+        if col == edit_column:
             model = view.get_model()
             row = model[path]
             entry = row[0]

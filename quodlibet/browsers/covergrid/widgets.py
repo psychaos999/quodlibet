@@ -61,10 +61,13 @@ class AlbumWidget(Gtk.Box):
         frame.set_child(self._image)
         frame.set_size_request(image_size, image_size)
 
+        # width_chars constrains natural width so GridView can multi-column;
+        # max_width_chars alone still reports full text as natural width in GTK4.
         self._label = label = Gtk.Label(
             ellipsize=Pango.EllipsizeMode.END,
             justify=Gtk.Justification.CENTER,
-            max_width_chars=1,
+            width_chars=12,
+            max_width_chars=12,
         )
 
         self.append(frame)
