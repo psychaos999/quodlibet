@@ -219,8 +219,8 @@ def _init_g():
         )
 
     # blacklist some modules, simply loading can cause segfaults
-    sys.modules["glib"] = None
-    sys.modules["gobject"] = None
+    sys.modules["glib"] = None  # type: ignore[assignment]
+    sys.modules["gobject"] = None  # type: ignore[assignment]
 
 
 def _init_gtk():  # noqa: C901
@@ -252,14 +252,18 @@ def _init_gtk():  # noqa: C901
     gi.require_version("Pango", "1.0")
     gi.require_version("Soup", "3.0")
     gi.require_version("PangoCairo", "1.0")
+    gi.require_version("Adw", "1")
 
-    from gi.repository import Gtk
+    from gi.repository import Gtk, Adw
     from quodlibet.qltk import ThemeOverrider, gtk_version
 
     # PyGObject doesn't fail any more when init fails, so do it ourselves
     initialized = Gtk.init_check()
     if not initialized:
         raise SystemExit("Gtk.init failed")
+
+    # libadwaita: styles, breakpoints, dialogs, AboutDialog, etc.
+    Adw.init()
 
     # GTK4 compatibility: Add show_all/hide_all/set_no_show_all as no-ops
     if not hasattr(Gtk.Widget, "show_all"):
@@ -409,9 +413,16 @@ def _init_gtk():  # noqa: C901
     if not hasattr(Gtk.Button, "add"):
         Gtk.Button.add = lambda self, child: self.set_child(child)
 
-    # GTK4: Window.add() → Window.set_child()
+    # GTK4: Window.add() → set_content (Adw.Window) or set_child (Gtk.Window)
     if not hasattr(Gtk.Window, "add"):
-        Gtk.Window.add = lambda self, child: self.set_child(child)
+
+        def _window_add(self, child):
+            if hasattr(self, "set_content"):
+                self.set_content(child)
+            else:
+                self.set_child(child)
+
+        Gtk.Window.add = _window_add
 
     # GTK4: Window.resize() removed - use set_default_size() as approximation
     if not hasattr(Gtk.Window, "resize"):
@@ -491,11 +502,6 @@ def _init_gtk():  # noqa: C901
                 return Gtk.Scale.new(Gtk.Orientation.VERTICAL, adjustment)
 
         Gtk.VScale = VScaleCompat
-
-    if not hasattr(Gtk.Window, "add_accel_group"):
-        Gtk.Window.add_accel_group = lambda self, group: None
-    if not hasattr(Gtk.Window, "remove_accel_group"):
-        Gtk.Window.remove_accel_group = lambda self, group: None
 
     # GTK4: accelerator_parse now returns (success, keyval, modifiers)
     _original_accelerator_parse = Gtk.accelerator_parse
@@ -637,49 +643,6 @@ def _init_gtk():  # noqa: C901
             POPUP = 1
 
         Gtk.WindowType = WindowType
-
-    from gi.repository import GObject
-
-    # GTK4: AccelGroup removed - create dummy for compatibility
-    class AccelGroup(GObject.Object):
-        """Dummy AccelGroup for GTK4 compatibility.
-
-        In GTK4, AccelGroup was removed in favor of application-wide
-        keyboard shortcuts via GtkApplication. This dummy allows
-        code to continue creating AccelGroups without crashing.
-        """
-
-        def __init__(self):
-            super().__init__()
-
-        def connect(self, *args, **kwargs):
-            """Dummy connect - does nothing in GTK4"""
-
-        def disconnect(self, *args, **kwargs):
-            """Dummy disconnect - does nothing in GTK4"""
-
-    Gtk.AccelGroup = AccelGroup
-
-    # GTK4: AccelFlags removed - add dummy enum
-    if not hasattr(Gtk, "AccelFlags"):
-        from enum import IntFlag
-
-        class AccelFlags(IntFlag):
-            """Dummy AccelFlags for GTK4 compatibility."""
-
-            VISIBLE = 1 << 0
-            LOCKED = 1 << 1
-            MASK = 0x07
-
-        Gtk.AccelFlags = AccelFlags
-
-    # GTK4: Widget.add_accelerator() removed - add no-op shim
-    if not hasattr(Gtk.Widget, "add_accelerator"):
-
-        def _widget_add_accelerator(self, signal, accel_group, key, mod, flags):
-            """No-op shim: GTK4 uses Application.set_accels_for_action."""
-
-        Gtk.Widget.add_accelerator = _widget_add_accelerator
 
     # GTK4: MenuItem removed - create Button-based replacement
     if not hasattr(Gtk, "MenuItem"):
@@ -909,7 +872,6 @@ def _init_gtk():  # noqa: C901
     # GTK4: IconTheme.get_default() changed to get_for_display()
     if not hasattr(Gtk.IconTheme, "get_default"):
 
-        @staticmethod
         def _icon_theme_get_default():
             # GTK4: Use get_for_display with default display
             from gi.repository import Gdk
@@ -920,7 +882,7 @@ def _init_gtk():  # noqa: C901
             # Fallback to creating new instance
             return Gtk.IconTheme()
 
-        Gtk.IconTheme.get_default = _icon_theme_get_default
+        Gtk.IconTheme.get_default = staticmethod(_icon_theme_get_default)
 
     # GTK4: RC file system removed - themes work differently
     if not hasattr(Gtk, "rc_get_theme_dir"):
@@ -1396,13 +1358,14 @@ def _init_gtk():  # noqa: C901
     warnings.filterwarnings("ignore", ".*g_value_get_int.*", Warning)
 
     # blacklist some modules, simply loading can cause segfaults
-    sys.modules["gtk"] = None
-    sys.modules["gpod"] = None
-    sys.modules["gnome"] = None
+    sys.modules["gtk"] = None  # type: ignore[assignment]
+    sys.modules["gpod"] = None  # type: ignore[assignment]
+    sys.modules["gnome"] = None  # type: ignore[assignment]
 
-    from quodlibet.qltk import pygobject_version, gtk_version
+    from quodlibet.qltk import pygobject_version, gtk_version, adw_version
 
     MinVersions.GTK.check(gtk_version)
+    MinVersions.ADWAITA.check(adw_version)
     MinVersions.PYGOBJECT.check(pygobject_version)
 
 
@@ -1419,10 +1382,10 @@ def _init_gst():
 
     # We don't want python-gst, it changes API..
     assert "gi.overrides.Gst" not in sys.modules
-    sys.modules["gi.overrides.Gst"] = None
+    sys.modules["gi.overrides.Gst"] = None  # type: ignore[assignment]
 
     # blacklist some modules, simply loading can cause segfaults
-    sys.modules["gst"] = None
+    sys.modules["gst"] = None  # type: ignore[assignment]
 
     # We don't depend on Gst overrides, so make sure it's initialized.
     try:
@@ -1441,7 +1404,7 @@ def _init_gst():
     except GLib.GError:
         print_e("Failed to initialize GStreamer")
         # Uninited Gst segfaults: make sure no one can use it
-        sys.modules["gi.repository.Gst"] = None
+        sys.modules["gi.repository.Gst"] = None  # type: ignore[assignment]
     else:
         # monkey patching ahead
         _fix_gst_leaks()

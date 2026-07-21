@@ -89,20 +89,18 @@ class TrackList(Browser):
         self._library = library
 
         completion = LibraryTagCompletion(library.librarian)
-        self.accelerators = Gtk.AccelGroup()
 
         show_limit = config.getboolean("browsers", "search_limit")
         show_multi = config.getboolean("browsers", "multiple_queries")
         sbb = MultiSearchBarBox(
             completion=completion,
-            accel_group=self.accelerators,
             show_limit=show_limit,
             show_multi=show_multi,
         )
 
         sbb.connect("query-changed", self.__text_parse)
         sbb.connect("focus-out", self.__focus)
-        sbb.connect("key-press-event", self.__sb_key_pressed)
+        qltk.connect_key_pressed(sbb, self.__sb_key_pressed)
         self._sb_box = sbb
 
         prefs = PreferencesButton(sbb)

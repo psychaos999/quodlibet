@@ -249,10 +249,7 @@ class CollectionBrowser(Browser, util.InstanceTracker):
         prefs.add(SymbolicIconImage(Icons.OPEN_MENU, Gtk.IconSize.NORMAL))
         prefs.connect("clicked", lambda *x: Preferences(self))
 
-        self.accelerators = Gtk.AccelGroup()
-        search = SearchBarBox(
-            completion=AlbumTagCompletion(), accel_group=self.accelerators
-        )
+        search = SearchBarBox(completion=AlbumTagCompletion())
         search.connect("query-changed", self.__update_filter)
         connect_obj(search, "focus-out", lambda w: w.grab_focus(), view)
         self.__search = search
@@ -274,7 +271,7 @@ class CollectionBrowser(Browser, util.InstanceTracker):
         view.add_controller(drag_source)
 
         self.connect("destroy", self.__destroy)
-        self.connect("key-press-event", self.__key_pressed, library.librarian)
+        qltk.connect_key_pressed(self, self.__key_pressed, library.librarian)
 
         self.show_all()
 

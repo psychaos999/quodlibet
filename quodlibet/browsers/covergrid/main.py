@@ -39,7 +39,7 @@ from quodlibet.query import Query
 from quodlibet.qltk.information import Information
 from quodlibet.qltk.properties import SongProperties
 from quodlibet.qltk.songsmenu import SongsMenu, MenuItemSpec
-from quodlibet.qltk.x import MenuItem, Align, ScrolledWindow, RadioMenuItem
+from quodlibet.qltk.x import Align, ScrolledWindow
 from quodlibet.qltk.x import SymbolicIconImage
 from quodlibet.qltk.searchbar import SearchBarBox
 from quodlibet.qltk.menubutton import MenuButton
@@ -51,6 +51,8 @@ from quodlibet.qltk import popup_menu_at_widget
 
 class PreferencesButton(AlbumPreferencesButton):
     def __init__(self, browser, model):
+        # AlbumPreferencesButton builds a Gio.Menu PopoverMenu for sort + prefs.
+        # CoverGrid only swaps the Preferences dialog class; reuse the parent UI.
         Gtk.Box.__init__(self)
 
         sort_orders = [
@@ -64,38 +66,49 @@ class PreferencesButton(AlbumPreferencesButton):
             (_("Play_count"), self.__compare_avgplaycount),
         ]
 
-        menu = Gtk.PopoverMenu()
-
-        sort_item = Gtk.MenuItem(label=_("Sort _by…"), use_underline=True)
-        sort_menu = Gtk.PopoverMenu()
-
         active = config.getint("browsers", "album_sort", 1)
-
-        item = None
-        for i, (label, func) in enumerate(sort_orders):
-            item = RadioMenuItem(group=item, label=label, use_underline=True)
+        for i, (_label, func) in enumerate(sort_orders):
             model.set_sort_func(100 + i, func)
-            if i == active:
-                model.set_sort_column_id(100 + i, Gtk.SortType.ASCENDING)
-                item.set_active(True)
-            item.connect(
-                "toggled", util.DeferredSignal(self.__sort_toggled_cb), model, i
+        model.set_sort_column_id(100 + active, Gtk.SortType.ASCENDING)
+
+        action_group = Gio.SimpleActionGroup()
+        menu_model = Gio.Menu()
+        n_sorts = len(sort_orders)
+
+        sort_menu = Gio.Menu()
+        for i, (label, _func) in enumerate(sort_orders):
+            action_name = f"album-sort-{i}"
+            action = Gio.SimpleAction.new_stateful(
+                action_name,
+                None,
+                GLib.Variant.new_boolean(i == active),
             )
-            sort_menu.append(item)
 
-        sort_item.set_submenu(sort_menu)
-        menu.append(sort_item)
+            def on_sort(_action, _param, num=i, mdl=model):
+                for j in range(n_sorts):
+                    other = action_group.lookup_action(f"album-sort-{j}")
+                    if other is not None:
+                        other.set_state(GLib.Variant.new_boolean(j == num))
+                config.set("browsers", "album_sort", str(num))
+                mdl.set_sort_column_id(100 + num, Gtk.SortType.ASCENDING)
 
-        pref_item = MenuItem(_("_Preferences"), Icons.PREFERENCES_SYSTEM)
-        menu.append(pref_item)
-        connect_obj(pref_item, "activate", Preferences, browser)
+            action.connect("activate", on_sort)
+            action_group.add_action(action)
+            sort_menu.append(label.replace("_", ""), f"prefs.{action_name}")
+        menu_model.append_submenu(_("Sort by…"), sort_menu)
 
-        menu.show_all()
+        prefs_action = Gio.SimpleAction.new("open-prefs", None)
+        prefs_action.connect("activate", lambda *_a: Preferences(browser))
+        action_group.add_action(prefs_action)
+        menu_model.append(_("Preferences"), "prefs.open-prefs")
+
+        popover = Gtk.PopoverMenu.new_from_model(menu_model)
+        popover.insert_action_group("prefs", action_group)
 
         button = MenuButton(
             SymbolicIconImage(Icons.OPEN_MENU, Gtk.IconSize.NORMAL), arrow=True
         )
-        button.set_menu(menu)
+        button.set_menu(popover)
         self.prepend(button)
 
 
@@ -272,10 +285,7 @@ class CoverGrid(Browser, util.InstanceTracker, DisplayPatternMixin):
         view.add_controller(drag_source)
         view.connect("activate", self.__child_activated)
 
-        self.accelerators = Gtk.AccelGroup()
-        search = SearchBarBox(
-            completion=AlbumTagCompletion(), accel_group=self.accelerators
-        )
+        search = SearchBarBox(completion=AlbumTagCompletion())
         search.connect("query-changed", lambda *a: self.__update_filter())
         connect_obj(search, "focus-out", lambda w: w.grab_focus(), view)
         self.__search = search
@@ -291,7 +301,7 @@ class CoverGrid(Browser, util.InstanceTracker, DisplayPatternMixin):
             util.DeferredSignal(lambda *a: self.__update_songs(), owner=self),
         )
 
-        self.connect("key-press-event", self.__key_pressed, library.librarian)
+        qltk.connect_key_pressed(self, self.__key_pressed, library.librarian)
         self.connect("destroy", self.__destroy)
 
         if app.cover_manager:

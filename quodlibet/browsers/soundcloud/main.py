@@ -168,11 +168,9 @@ class SoundcloudBrowser(Browser, util.InstanceTracker):
 
     def _create_searchbar(self, library):
         completion = LibraryTagCompletion(library)
-        self.accelerators = Gtk.AccelGroup()
         search = SearchBarBox(
             completion=completion,
             validator=SoundcloudQuery.validator,
-            accel_group=self.accelerators,
             timeout=3000,
         )
         self.__searchbar = search

@@ -8,9 +8,12 @@
 # the Free Software Foundation; either version 2 of the License, or
 # (at your option) any later version.
 
-import os
+from __future__ import annotations
 
-from gi.repository import Gtk, Gdk, GLib, Gio, GObject
+import os
+from typing import TYPE_CHECKING
+
+from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Adw
 from quodlibet.fsn import uri2fsn, fsnative, path2fsn
 
 import quodlibet
@@ -24,6 +27,11 @@ from quodlibet import util
 from quodlibet import app
 from quodlibet import ngettext
 from quodlibet import _
+
+if TYPE_CHECKING:
+    from quodlibet.browsers._base import Browser as BrowserBase
+    from quodlibet.library.song import SongFileLibrary
+    from quodlibet.player._base import BasePlayer
 from quodlibet.qltk.paned import ConfigRHPaned
 
 from quodlibet.qltk.appwindow import AppWindow
@@ -49,16 +57,17 @@ from quodlibet.qltk.pluginwin import PluginWindow
 from quodlibet.qltk.properties import SongProperties
 from quodlibet.qltk.prefs import PreferencesWindow
 from quodlibet.qltk.queue import QueueExpander
+from quodlibet.qltk.searchbar import SearchBarBox
 from quodlibet.qltk.songlist import SongList, get_columns, set_columns
 from quodlibet.qltk.songmodel import PlaylistMux
 from quodlibet.qltk.x import RVPaned, Align, ScrolledWindow
 from quodlibet.qltk.x import HighlightToggleButton
-from quodlibet.qltk.x import MenuItem, SeparatorMenuItem
+
 from quodlibet.qltk import Icons
 from quodlibet.qltk.about import AboutDialog
 from quodlibet.util import copool, connect_destroy, connect_after_destroy
 from quodlibet.util.library import get_scan_dirs
-from quodlibet.util import connect_obj, print_d
+from quodlibet.util import print_d
 from quodlibet.util.library import background_filter, scan_library
 from quodlibet.util.path import uri_is_valid
 from quodlibet.qltk.window import PersistentWindowMixin, Window, on_first_map
@@ -200,48 +209,44 @@ class PlayerOptions(GObject.Object):
 
 
 class DockMenu(Gtk.PopoverMenu):
-    """Menu used for the OSX dock and the tray icon"""
+    """Menu used for the OSX dock and the tray icon (Gio.Menu model)."""
 
     def __init__(self, app):
         super().__init__()
+        self.set_has_arrow(False)
 
         player = app.player
+        model = Gio.Menu()
+        actions = Gio.SimpleActionGroup()
 
-        play_item = MenuItem(_("_Play"), Icons.MEDIA_PLAYBACK_START)
-        play_item.connect("activate", self._on_play, player)
-        pause_item = MenuItem(_("P_ause"), Icons.MEDIA_PLAYBACK_PAUSE)
-        pause_item.connect("activate", self._on_pause, player)
-        self.append(play_item)
-        self.append(pause_item)
+        def add_action(name, callback):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda *_a: callback())
+            actions.add_action(action)
 
-        previous = MenuItem(_("Pre_vious"), Icons.MEDIA_SKIP_BACKWARD)
-        previous.connect("activate", lambda *args: player.previous())
-        self.append(previous)
+        transport = Gio.Menu()
+        add_action("play", lambda: setattr(player, "paused", False))
+        add_action("pause", lambda: setattr(player, "paused", True))
+        add_action("previous", lambda: player.previous())
+        add_action("next", lambda: player.next())
+        transport.append(_("Play"), "dock.play")
+        transport.append(_("Pause"), "dock.pause")
+        transport.append(_("Previous"), "dock.previous")
+        transport.append(_("Next"), "dock.next")
+        model.append_section(None, transport)
 
-        next_ = MenuItem(_("_Next"), Icons.MEDIA_SKIP_FORWARD)
-        next_.connect("activate", lambda *args: player.next())
-        self.append(next_)
-
-        browse = qltk.MenuItem(_("_Browse Library"), Icons.EDIT_FIND)
-        browse_sub = Gtk.PopoverMenu()
-        for Kind in browsers.browsers:
-            i = Gtk.MenuItem(label=Kind.accelerated_name, use_underline=True)
-            connect_obj(
-                i, "activate", LibraryBrowser.open, Kind, app.library, app.player
+        browse = Gio.Menu()
+        for i, Kind in enumerate(browsers.browsers):
+            name = f"browse-{i}"
+            add_action(
+                name,
+                lambda kind=Kind: LibraryBrowser.open(kind, app.library, app.player),
             )
-            browse_sub.append(i)
+            browse.append(Kind.accelerated_name.replace("_", ""), f"dock.{name}")
+        model.append_submenu(_("Browse Library"), browse)
 
-        browse.set_submenu(browse_sub)
-        self.append(SeparatorMenuItem())
-        self.append(browse)
-
-        self.hide()
-
-    def _on_play(self, item, player):
-        player.paused = False
-
-    def _on_pause(self, item, player):
-        player.paused = True
+        self.set_menu_model(model)
+        self.insert_action_group("dock", actions)
 
 
 class MainSongList(SongList):
@@ -267,7 +272,7 @@ class MainSongList(SongList):
     def __orders_changed(self, *args):
         l = []
         for tag, reverse in self.get_sort_orders():
-            l.append("%d%s" % (int(reverse), tag))
+            l.append(f"{int(reverse)}{tag}")
         config.setstringlist("memory", "sortby", l)
 
     def __select_song(self, widget, indices, col, player):
@@ -489,15 +494,24 @@ class SongListPaned(RVPaned):
 
 
 class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
+    # Set during __init__; browser is None only until the first selection.
+    browser: BrowserBase | None
+    __player: BasePlayer
+    __library: SongFileLibrary
+
     def __init__(self, library, player, headless=False, restore_cb=None):
         super().__init__(dialog=False)
 
         self.__destroyed = False
+        self.__player = player
+        self.__library = library
         self.__update_title(player)
         self.set_default_size(600, 480)
 
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.set_child(main_box)
+        # Adw.ToolbarView: menubar + transport top, status bottom, paned content
+        self._toolbar_view = Adw.ToolbarView()
+        self.set_child(self._toolbar_view)
+
         self.side_book = qltk.Notebook()
 
         # get the playlist up before other stuff
@@ -524,17 +538,15 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
 
         self.playlist = PlaylistMux(player, self.qexpander.model, self.songlist.model)
 
-        self.__player = player
-        self.__library = library
         action_group, menu_model = self.__create_menu(player, library)
         self.insert_action_group("win", action_group)
         self._action_group = action_group
         menubar = Gtk.PopoverMenuBar.new_from_model(menu_model)
-        main_box.append(menubar)
+        self._toolbar_view.add_top_bar(menubar)
         self.__wire_shortcuts(player)
 
         top_bar = TopBar(self, player, library)
-        main_box.append(top_bar)
+        self._toolbar_view.add_top_bar(top_bar)
         self.top_bar = top_bar
 
         self.__browserbox = Align(top=3, bottom=3)
@@ -545,7 +557,7 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         paned.set_resize_start_child(True)
         # We'll set_end_child when necessary (when the first sidebar plugin is set up)
 
-        main_box.append(paned)
+        self._toolbar_view.set_content(paned)
 
         play_order = PlayOrderWidget(self.songlist.model, player)
         statusbox = StatusBarBox(play_order, self.qexpander)
@@ -553,7 +565,7 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         self.statusbar = statusbox.statusbar
 
         align = Align(statusbox, top=1, bottom=4, left=6, right=6)
-        main_box.append(align)
+        self._toolbar_view.add_bottom_bar(align)
 
         self.songpane = SongListPaned(self.song_scroller, self.qexpander)
         self.songpane.show()
@@ -617,7 +629,7 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         if config.getboolean("library", "refresh_on_start"):
             self.__rebuild(None, False)
 
-        self.connect("key-press-event", self.__key_pressed, player)
+        qltk.connect_key_pressed(self, self.__key_pressed, player)
 
         self.connect("destroy", self.__destroy)
 
@@ -727,6 +739,14 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
             window = EditBookmarks(self, librarian, player)
             window.show()
 
+    def __focus_search(self, *args):
+        browser = self.browser
+        if browser is None:
+            return
+        for widget in qltk.find_widgets(browser, SearchBarBox):
+            widget.focus_entry()
+            return
+
     def __key_pressed(self, widget, event, player):
         if not player.song:
             return None
@@ -783,7 +803,8 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
                 filename = None
             if filename is not None:
                 continue  # local files handled by the FileList drop target
-            if app.player.can_play_uri(uri):
+            player = app.player
+            if player is not None and player.can_play_uri(uri):
                 if uri not in self.__library:
                     self.__library.add([RemoteFile(uri)])
             else:
@@ -800,25 +821,17 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         return True
 
     def __songlist_key_press(self, controller, keyval, keycode, state):
-        # GTK4: EventControllerKey.key-pressed has different signature
-        # Create a simple event-like object for compatibility with browser.key_pressed()
-        class KeyEvent:
-            def __init__(self, keyval, keycode, state):
-                self.type = Gdk.EventType.KEY_PRESS
-                self.keyval = keyval
-                self.keycode = keycode
-                self.state = state
-
-            def get_state(self):
-                return self.state
-
-        event = KeyEvent(keyval, keycode, state)
-        return self.browser.key_pressed(event)
+        browser = self.browser
+        if browser is None:
+            return False
+        event = qltk.KeyEvent(keyval, keycode, state)
+        return browser.key_pressed(event)
 
     def __songlist_drag_data_recv(self, view, *args):
-        if self.browser.can_reorder:
+        browser = self.browser
+        if browser is not None and browser.can_reorder:
             songs = view.get_songs()
-            self.browser.reordered(songs)
+            browser.reordered(songs)
         self.songlist.clear_sort()
 
     def __wire_shortcuts(self, player):
@@ -841,6 +854,7 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         add("<Primary>q", "win.Quit")
         add("<Primary>i", "win.Information")
         add("<Primary>j", "win.Jump")
+        add("<Primary>l", "win.FocusSearch")
         add("F5", "win.RefreshLibrary")
         add("<Primary>p", "win.Preferences")
 
@@ -893,6 +907,7 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         simple("EditTags", self.__current_song_prop)
         simple("Information", self.__current_song_info)
         simple("Jump", self.__jump_to_current)
+        simple("FocusSearch", self.__focus_search)
         # Original code calls __jump_to_current once at action setup time
         self.__jump_to_current(True, None, True)
 
@@ -962,51 +977,69 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         # Build the menu model
         menu = Gio.Menu()
 
+        # Accelerators shown next to menu items (matches the ShortcutController).
+        accels = {
+            "win.Quit": "<Primary>q",
+            "win.Preferences": "<Primary>p",
+            "win.RefreshLibrary": "F5",
+            "win.Information": "<Primary>i",
+            "win.Jump": "<Primary>j",
+            "win.FocusSearch": "<Primary>l",
+        }
+
+        def add_item(menu_, label, action):
+            item = Gio.MenuItem.new(label, action)
+            accel = accels.get(action)
+            if accel:
+                item.set_attribute_value("accel", GLib.Variant("s", accel))
+            menu_.append_item(item)
+
         file_menu = Gio.Menu()
         sec = Gio.Menu()
-        sec.append(_("_Add a Folder…"), "win.AddFolders")
-        sec.append(_("_Add a File…"), "win.AddFiles")
-        sec.append(_("_Add a Location…"), "win.AddLocation")
+        add_item(sec, _("_Add a Folder…"), "win.AddFolders")
+        add_item(sec, _("_Add a File…"), "win.AddFiles")
+        add_item(sec, _("_Add a Location…"), "win.AddLocation")
         file_menu.append_section(None, sec)
         sec = Gio.Menu()
-        sec.append(_("_Preferences"), "win.Preferences")
-        sec.append(_("_Plugins"), "win.Plugins")
+        add_item(sec, _("_Preferences"), "win.Preferences")
+        add_item(sec, _("_Plugins"), "win.Plugins")
         file_menu.append_section(None, sec)
         sec = Gio.Menu()
         item = Gio.MenuItem.new(_("_Scan Library"), "win.RefreshLibrary")
         item.set_attribute_value(
             "tooltip", GLib.Variant.new_string(_("Check for changes in your library"))
         )
+        item.set_attribute_value("accel", GLib.Variant("s", "F5"))
         sec.append_item(item)
         file_menu.append_section(None, sec)
         sec = Gio.Menu()
-        sec.append(_("_Quit"), "win.Quit")
+        add_item(sec, _("_Quit"), "win.Quit")
         file_menu.append_section(None, sec)
         menu.append_submenu(_("_File"), file_menu)
 
         song_menu = Gio.Menu()
         sec = Gio.Menu()
-        sec.append(_("Edit Bookmarks…"), "win.EditBookmarks")
-        sec.append(_("_Edit…"), "win.EditTags")
+        add_item(sec, _("Edit Bookmarks…"), "win.EditBookmarks")
+        add_item(sec, _("_Edit…"), "win.EditTags")
         song_menu.append_section(None, sec)
         sec = Gio.Menu()
-        sec.append(_("_Information"), "win.Information")
+        add_item(sec, _("_Information"), "win.Information")
         song_menu.append_section(None, sec)
         sec = Gio.Menu()
-        sec.append(_("_Jump to Playing Song"), "win.Jump")
+        add_item(sec, _("_Jump to Playing Song"), "win.Jump")
         song_menu.append_section(None, sec)
         menu.append_submenu(_("_Song"), song_menu)
 
         control_menu = Gio.Menu()
-        control_menu.append(_("Pre_vious"), "win.Previous")
+        add_item(control_menu, _("Pre_vious"), "win.Previous")
         # PlayPause label flips between Play/Pause; we store the section
         # for dynamic relabeling in __update_paused.
         self._playpause_section = Gio.Menu()
         self._playpause_section.append(_("_Play"), "win.PlayPause")
         control_menu.append_section(None, self._playpause_section)
-        control_menu.append(_("_Next"), "win.Next")
-        control_menu.append(_("Stop"), "win.Stop")
-        control_menu.append(_("Stop After This Song"), "win.StopAfter")
+        add_item(control_menu, _("_Next"), "win.Next")
+        add_item(control_menu, _("Stop"), "win.Stop")
+        add_item(control_menu, _("Stop After This Song"), "win.StopAfter")
         menu.append_submenu(_("_Control"), control_menu)
 
         browse_menu = Gio.Menu()
@@ -1018,11 +1051,11 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         open_browser = Gio.Menu()
         main_open = Gio.Menu()
         for Kind in _browser_kinds(external=False):
-            main_open.append(Kind.accelerated_name, "win.Browser" + Kind.__name__)
+            add_item(main_open, Kind.accelerated_name, "win.Browser" + Kind.__name__)
         open_browser.append_section(None, main_open)
         ext_open = Gio.Menu()
         for Kind in _browser_kinds(external=True):
-            ext_open.append(Kind.accelerated_name, "win.Browser" + Kind.__name__)
+            add_item(ext_open, Kind.accelerated_name, "win.Browser" + Kind.__name__)
         if ext_open.get_n_items():
             open_browser.append_section(None, ext_open)
         browse_menu.append_submenu(_("Open _Browser"), open_browser)
@@ -1050,12 +1083,12 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         menu.append_submenu(_("_Browse"), browse_menu)
 
         help_menu = Gio.Menu()
-        help_menu.append(_("Online Help"), "win.OnlineHelp")
-        help_menu.append(_("_Keyboard Shortcuts"), "win.Shortcuts")
-        help_menu.append(_("Search Help"), "win.SearchHelp")
+        add_item(help_menu, _("Online Help"), "win.OnlineHelp")
+        add_item(help_menu, _("_Keyboard Shortcuts"), "win.Shortcuts")
+        add_item(help_menu, _("Search Help"), "win.SearchHelp")
         sec = Gio.Menu()
-        sec.append(_("_Check for Updates…"), "win.CheckUpdates")
-        sec.append(_("_About"), "win.About")
+        add_item(sec, _("_Check for Updates…"), "win.CheckUpdates")
+        add_item(sec, _("_About"), "win.About")
         help_menu.append_section(None, sec)
         menu.append_submenu(_("_Help"), help_menu)
 
@@ -1100,8 +1133,6 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
                 self.songlist.clear()
             container = self.browser.__container
             self.browser.unpack(container, self.songpane)
-            if self.browser.accelerators:
-                self.remove_accel_group(self.browser.accelerators)
             # GTK4: destroy() removed - container cleaned up automatically
             # GTK4: self.destroy() removed - browser cleaned up automatically
         self.browser = Browser(library)
@@ -1113,29 +1144,30 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         self.browser.finalize(restore)
         if not restore:
             self.browser.unfilter()
-        if self.browser.can_reorder:
+        browser = self.browser
+        assert browser is not None
+        if browser.can_reorder:
             self.songlist.enable_drop()
-        elif self.browser.dropped:
-            self.songlist.enable_drop(False)
         else:
-            self.songlist.disable_drop()
-        if self.browser.accelerators:
-            self.add_accel_group(self.browser.accelerators)
+            # Non-reorderable browsers still accept external drops
+            # (Browser.dropped() handles or rejects them).
+            self.songlist.enable_drop(False)
         self.set_sortability()
-        container = self.browser.__container = self.browser.pack(self.songpane)
+        container = browser.__container = browser.pack(self.songpane)
 
         # GTK4: Reset the cursor when done loading the browser
         GLib.idle_add(self.set_cursor, None)
 
-        player.replaygain_profiles[1] = self.browser.replaygain_profiles
+        player.replaygain_profiles[1] = browser.replaygain_profiles
         player.reset_replaygain()
         self.__browserbox.add(container)
         container.show()
-        self._filter_menu.set_browser(self.browser)
+        self._filter_menu.set_browser(browser)
         self.__hide_headers()
 
     def set_sortability(self):
-        self.songlist.sortable = not self.browser.can_reorder
+        browser = self.browser
+        self.songlist.sortable = not (browser is not None and browser.can_reorder)
 
     def __update_paused(self, player, paused):
         label = _("_Play") if paused else _("P_ause")
@@ -1145,7 +1177,8 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
     def __song_ended(self, player, song, stopped):
         # Check if the song should be removed, based on the
         # active filter of the current browser.
-        active_filter = self.browser.active_filter
+        browser = self.browser
+        active_filter = browser.active_filter if browser is not None else None
         if song and active_filter and not active_filter(song):
             iter_ = self.songlist.model.find(song)
             if iter_:
@@ -1203,10 +1236,14 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
             self.__jump_to_current(False, self.qexpander.queue)
 
     def __play_pause(self, *args):
-        app.player.playpause()
+        player = app.player
+        if player is not None:
+            player.playpause()
 
     def __stop(self, *args):
-        app.player.stop()
+        player = app.player
+        if player is not None:
+            player.stop()
 
     def __jump_to_current(self, explicit, songlist=None, force_scroll=False):
         """Select/scroll to the current playing song in the playlist.
@@ -1238,10 +1275,11 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
             else:
                 songlist = self.songlist
 
-        if app.player is None:
+        player = app.player
+        if player is None:
             return
 
-        song = app.player.song
+        song = player.song
 
         # We are not playing a song
         if song is None:
@@ -1256,18 +1294,25 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         if ok:
             songlist.grab_focus()
         elif explicit:
+            browser = self.browser
+            if browser is None:
+                return
             # if we can't find it and the user requested it, try harder
-            self.browser.scroll(song)
+            browser.scroll(song)
             # We need to wait until the browser has finished
             # scrolling/filling and the songlist is ready.
             # Not perfect, but works for now.
             GLib.idle_add(idle_jump_to, song, explicit, priority=GLib.PRIORITY_LOW)
 
     def __next_song(self, *args):
-        app.player.next()
+        player = app.player
+        if player is not None:
+            player.next()
 
     def __previous_song(self, *args):
-        app.player.previous()
+        player = app.player
+        if player is not None:
+            player.previous()
 
     def __rebuild(self, activator, force):
         scan_library(self.__library, force)
@@ -1296,15 +1341,16 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
                     _("Unable to add location"),
                     _("%s is not a valid location.") % util.bold(name),
                 ).run()
-            elif not app.player.can_play_uri(name):
-                ErrorMessage(
-                    self,
-                    _("Unable to add location"),
-                    _("%s uses an unsupported protocol.") % (util.bold(name)),
-                    escape_desc=False,
-                ).run()
             else:
-                if name not in self.__library:
+                player = app.player
+                if player is None or not player.can_play_uri(name):
+                    ErrorMessage(
+                        self,
+                        _("Unable to add location"),
+                        _("%s uses an unsupported protocol.") % (util.bold(name)),
+                        escape_desc=False,
+                    ).run()
+                elif name not in self.__library:
                     self.__library.add([RemoteFile(name)])
 
     def open_chooser(self, action):
@@ -1332,21 +1378,25 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
         return None
 
     def __current_song_prop(self, *args):
-        song = app.player.song
+        player = app.player
+        song = player.song if player is not None else None
         if song:
             librarian = self.__library.librarian
             window = SongProperties(librarian, [song], parent=self)
             window.show()
 
     def __current_song_info(self, *args):
-        song = app.player.song
+        player = app.player
+        song = player.song if player is not None else None
         if song:
             librarian = self.__library.librarian
             window = Information(librarian, [song], self)
             window.show()
 
     def __browser_activate(self, browser):
-        app.player._reset()
+        player = app.player
+        if player is not None:
+            player._reset()
 
     def __browser_cb(self, browser, songs, sorted, library, player):
         if browser.background:
@@ -1373,12 +1423,14 @@ class QuodLibetWindow(Window, PersistentWindowMixin, AppWindow):
                 self.__restore_cb = None
 
     def __hide_headers(self, activator=None):
+        browser = self.browser
+        headers = browser.headers if browser is not None else None
         for column in self.songlist.get_columns():
-            if self.browser.headers is None:
+            if headers is None:
                 column.set_visible(True)
             else:
                 for tag in util.tagsplit(column.header_name):
-                    if tag in self.browser.headers:
+                    if tag in headers:
                         column.set_visible(True)
                         break
                 else:

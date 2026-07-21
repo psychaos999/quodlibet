@@ -79,20 +79,17 @@ class PanedBrowser(Browser, util.InstanceTracker):
         self.set_orientation(Gtk.Orientation.VERTICAL)
 
         completion = LibraryTagCompletion(library.librarian)
-        self.accelerators = Gtk.AccelGroup()
-        sbb = SearchBarBox(completion=completion, accel_group=self.accelerators)
+        sbb = SearchBarBox(completion=completion)
         sbb.connect("query-changed", self.__text_parse)
         sbb.connect("focus-out", self.__focus)
-        sbb.connect("key-press-event", self.__sb_key_pressed)
+        qltk.connect_key_pressed(sbb, self.__sb_key_pressed)
         self._sb_box = sbb
 
         align = Align(sbb, left=6, right=6, top=0)
         self.append(align)
 
-        keyval, mod = Gtk.accelerator_parse("<Primary>Home")
-        self.accelerators.connect(keyval, mod, 0, self.__select_all)
         select = Gtk.Button(label=_("Select _All"), use_underline=True)
-        select.connect("clicked", self.__select_all)
+        select.connect("clicked", self.select_all)
         sbb.append(select)
 
         prefs = PreferencesButton(self)
@@ -149,6 +146,9 @@ class PanedBrowser(Browser, util.InstanceTracker):
             limit = config.getint("browsers", "searchbar_enqueue_limit")
             app.window.enqueue(songs, limit)
             return True
+        if is_accel(event, "<Primary>Home"):
+            self.select_all()
+            return True
         return False
 
     def filter_text(self, text):
@@ -158,12 +158,20 @@ class PanedBrowser(Browser, util.InstanceTracker):
     def get_filter_text(self):
         return self._get_text()
 
-    def __select_all(self, *args):
+    def select_all(self, *args):
+        """Select the "All" entry in every pane."""
+
         self._panes[-1].inhibit()
         for pane in self._panes:
             pane.set_selected(None, True)
         self._panes[-1].uninhibit()
         self._panes[-1].get_selection().emit("changed")
+
+    def key_pressed(self, event):
+        if is_accel(event, "<Primary>Home"):
+            self.select_all()
+            return True
+        return False
 
     def __added(self, library, songs):
         songs = list(filter(self._filter, songs))

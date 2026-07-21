@@ -227,8 +227,6 @@ class LibraryBrowser(Window, util.InstanceTracker, PersistentWindowMixin):
             view.enable_drop()
         elif browser.dropped:
             view.enable_drop(False)
-        if browser.accelerators:
-            self.add_accel_group(browser.accelerators)
 
         self.__container = browser.pack(sw)
         self.get_child().prepend(self.__container)

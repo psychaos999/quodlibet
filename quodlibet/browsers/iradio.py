@@ -579,10 +579,7 @@ class InternetRadio(Browser, util.InstanceTracker):
         self.connect("destroy", self.__destroy)
 
         completion = LibraryTagCompletion(self.__stations)
-        self.accelerators = Gtk.AccelGroup()
-        self.__searchbar = search = SearchBarBox(
-            completion=completion, accel_group=self.accelerators
-        )
+        self.__searchbar = search = SearchBarBox(completion=completion)
         search.connect("query-changed", self.__filter_changed)
 
         def focus(widget, *args):

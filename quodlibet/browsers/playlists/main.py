@@ -31,10 +31,9 @@ from quodlibet.qltk.msg import ConfirmationPrompt
 from quodlibet.qltk.properties import SongProperties
 from quodlibet.qltk.searchbar import SearchBarBox
 from quodlibet.qltk.songlist import SongList
-from quodlibet.qltk.songsmenu import SongsMenu
+from quodlibet.qltk.songsmenu import SongsMenu, MenuItemSpec
 from quodlibet.qltk.views import RCMHintedTreeView
-from quodlibet.qltk.x import ScrolledWindow, Align, MenuItem, SymbolicIconImage
-from quodlibet.util import connect_obj
+from quodlibet.qltk.x import ScrolledWindow, Align, SymbolicIconImage
 from quodlibet.util.collection import Playlist
 from quodlibet.util.dprint import print_d, print_w
 from .util import (
@@ -187,11 +186,18 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
 
     def menu(self, songs, library, items):
         model, iters = self.__get_selected_songs()
-        remove = qltk.MenuItem(_("_Remove from Playlist"), Icons.LIST_REMOVE)
-        qltk.add_fake_accel(remove, "Delete")
-        connect_obj(remove, "activate", self.__remove_songs, iters, model)
+        iters = list(iters)
         playlist_iter = self.__selected_playlists()[1]
-        remove.set_sensitive(bool(playlist_iter))
+
+        def remove_cb(parent):
+            self.__remove_songs(iters, model)
+
+        remove = MenuItemSpec(
+            _("_Remove from Playlist"),
+            remove_cb,
+            enabled=bool(playlist_iter),
+            accel="Delete",
+        )
         items.append([remove])
         return super().menu(songs, library, items)
 
@@ -214,9 +220,8 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
         return box
 
     def __create_searchbar(self, library):
-        self.accelerators = Gtk.AccelGroup()
         completion = LibraryTagCompletion(library.librarian)
-        sbb = SearchBarBox(completion=completion, accel_group=self.accelerators)
+        sbb = SearchBarBox(completion=completion)
         sbb.connect("query-changed", self.__text_parse)
         sbb.connect("focus-out", self.__focus)
         return sbb
@@ -471,11 +476,10 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
             return None
         songs = list(model[itr][0])
         songs = [s for s in songs if isinstance(s, AudioFile)]
-        menu = SongsMenu(library, songs, playlists=False, remove=False, ratings=False)
-        menu.preseparate()
+        playlist = model[itr][0]
+        path = model.get_path(itr)
 
-        def _remove(model, itr):
-            playlist = model[itr][0]
+        def _remove(_parent=None):
             response = confirm_remove_playlist_dialog_invoke(
                 self, playlist, self.Confirmer
             )
@@ -484,21 +488,24 @@ class PlaylistsBrowser(Browser, DisplayPatternMixin):
             else:
                 print_d("Playlist removal cancelled through prompt")
 
-        rem = MenuItem(_("_Delete"), Icons.EDIT_DELETE)
-        connect_obj(rem, "activate", _remove, model, itr)
-        menu.prepend(rem)
-
-        def _rename(path):
+        def _rename(_parent=None):
             self._start_rename(path)
 
-        ren = qltk.MenuItem(_("_Rename"), Icons.EDIT)
-        qltk.add_fake_accel(ren, "F2")
-        connect_obj(ren, "activate", _rename, model.get_path(itr))
-        menu.prepend(ren)
-
-        playlist = model[itr][0]
-        PLAYLIST_HANDLER.populate_menu(menu, library, self, [playlist])
-        menu.show_all()
+        playlist_items = [
+            MenuItemSpec(_("_Rename"), _rename, accel="F2"),
+            MenuItemSpec(_("_Delete"), _remove),
+        ]
+        playlist_items.extend(
+            PLAYLIST_HANDLER.menu_item_specs(library, self, [playlist])
+        )
+        menu = SongsMenu(
+            library,
+            songs,
+            playlists=False,
+            remove=False,
+            ratings=False,
+            items=[playlist_items],
+        )
         return view.popup_menu(menu, 0, GLib.CURRENT_TIME)
 
     def _start_rename(self, path):
@@ -677,14 +684,9 @@ class PreferencesButton(Gtk.Box):
     def __init__(self, browser):
         super().__init__()
 
-        menu = Gtk.PopoverMenu()
-
-        pref_item = MenuItem(_("_Preferences"), Icons.PREFERENCES_SYSTEM)
-        menu.append(pref_item)
-        connect_obj(pref_item, "activate", Preferences, browser)
-
-        menu.show_all()
-
+        menu = qltk.gio_action_popover(
+            [(_("_Preferences"), lambda: Preferences(browser))]
+        )
         button = MenuButton(
             SymbolicIconImage(Icons.OPEN_MENU, Gtk.IconSize.NORMAL), arrow=True
         )

@@ -115,7 +115,6 @@ class EditBookmarksPane(Gtk.Box):
         sw.set_vexpand(True)
         self.append(sw)
         add_css(self, "* { margin: 12px } ")
-        self.accels = Gtk.AccelGroup()
 
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.remove = remove = qltk.Button(_("_Remove"), Icons.LIST_REMOVE)
@@ -148,19 +147,12 @@ class EditBookmarksPane(Gtk.Box):
         connect_obj(time, "activate", Gtk.Entry.grab_focus, name)
         name.set_placeholder_text(_("Bookmark Name"))
 
-        menu = Gtk.PopoverMenu()
-        remove = qltk.MenuItem(_("_Remove"), Icons.LIST_REMOVE)
-        remove.connect("activate", self.__remove, selection, library)
-        keyval, mod = Gtk.accelerator_parse("Delete")
-        remove.add_accelerator(
-            "activate", self.accels, keyval, mod, Gtk.AccelFlags.VISIBLE
+        menu = qltk.gio_action_popover(
+            [(_("_Remove"), lambda: self.__remove(None, selection, library))]
         )
-        menu.append(remove)
-        menu.show_all()
-        sw.get_child().connect("popup-menu", self.__popup, menu)
-        sw.get_child().connect("key-press-event", self.__view_key_press, remove)
-        # GTK4: Gtk.Menu removed, use PopoverMenu
-        self.connect("destroy", lambda _: menu.destroy())
+        child = sw.get_child()
+        child.connect("popup-menu", self.__popup, menu)
+        qltk.connect_key_pressed(child, self.__view_key_press, selection, library)
         if parent:
             parent.connect("changed", self.__parent_changed)
 
@@ -185,9 +177,9 @@ class EditBookmarksPane(Gtk.Box):
         self.set_sensitive(value)
         self.set_tooltip_text(_("Select a single track to edit its bookmarks"))
 
-    def __view_key_press(self, view, event, remove):
-        if event.keyval == Gtk.accelerator_parse("Delete")[0]:
-            remove.activate()
+    def __view_key_press(self, view, event, selection, library):
+        if qltk.is_accel(event, "Delete"):
+            self.__remove(None, selection, library)
 
     def __popup(self, view, menu):
         return view.popup_menu(menu, 0, GLib.CURRENT_TIME)

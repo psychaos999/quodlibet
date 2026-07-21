@@ -15,9 +15,11 @@ from urllib.parse import urlparse
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
 
 from gi.repository import Gtk
 from gi.repository import Gdk
+from gi.repository import Adw
 from gi.repository import GLib, GObject, PangoCairo
 from quodlibet.fsn import fsn2bytes, bytes2fsn, uri2fsn
 
@@ -335,26 +337,39 @@ def popup_menu_at_widget(menu, widget, button, time):
     menu_popup(menu, None, None, None, None, button, time)
 
 
-def add_fake_accel(widget, accel):
-    """Accelerators are only for window menus and global keyboard shortcuts.
+def gio_action_popover(items, prefix="menu"):
+    """Build a ``Gtk.PopoverMenu`` from simple ``(label, callback)`` specs.
 
-    Since we want to use them in context menus as well, to indicate which
-    key events the parent widget knows about, we use a global fake
-    accelgroup without any actions..
+    *items* is a sequence of ``(label, callback)`` or
+    ``(label, callback, enabled)``. Labels should already be translated;
+    mnemonics (``_``) are stripped for display. Returns a model-based
+    ``PopoverMenu`` with a private action group inserted under *prefix*.
     """
 
-    # GTK4: Accelerators system completely redesigned
-    # For menu items, shortcuts are handled differently
-    # This function is mainly for display purposes, so we can skip it in GTK4
-    if hasattr(widget, "add_accelerator"):
-        if not hasattr(add_fake_accel, "_group"):
-            add_fake_accel._group = Gtk.AccelGroup()
-        group = add_fake_accel._group
+    from gi.repository import Gio
 
-        key, val = Gtk.accelerator_parse(accel)
-        assert key is not None
-        assert val is not None
-        widget.add_accelerator("activate", group, key, val, Gtk.AccelFlags.VISIBLE)
+    action_group = Gio.SimpleActionGroup()
+    menu_model = Gio.Menu()
+    for i, entry in enumerate(items):
+        if len(entry) == 3:
+            label, callback, enabled = entry
+        else:
+            label, callback = entry
+            enabled = True
+        name = f"item{i}"
+        action = Gio.SimpleAction.new(name, None)
+        action.set_enabled(bool(enabled))
+        action.connect(
+            "activate",
+            lambda _a, _p, cb=callback: cb() if callable(cb) else None,
+        )
+        action_group.add_action(action)
+        display = label.replace("_", "") if label else label
+        menu_model.append(display, f"{prefix}.{name}")
+
+    popover = Gtk.PopoverMenu.new_from_model(menu_model)
+    popover.insert_action_group(prefix, action_group)
+    return popover
 
 
 def is_accel(event, *accels):
@@ -371,9 +386,49 @@ def is_accel(event, *accels):
         ValueError: in case any of the accels could not be parsed
     """
 
-    if event.type != Gdk.EventType.KEY_PRESS:
+    # Accept either a real GdkEvent or our KeyEvent stand-in
+    etype = getattr(event, "type", None)
+    if etype is not None and etype != Gdk.EventType.KEY_PRESS:
         return False
     return is_accel_pressed(event.keyval, event.state, *accels)
+
+
+class KeyEvent:
+    """Minimal stand-in for a Gdk key-press event.
+
+    Used with :func:`is_accel` from ``EventControllerKey`` handlers so
+    call sites can keep the old ``is_accel(event, ...)`` shape.
+    """
+
+    __slots__ = ("type", "keyval", "keycode", "state")
+
+    def __init__(self, keyval, keycode=0, state=0):
+        self.type = Gdk.EventType.KEY_PRESS
+        self.keyval = keyval
+        self.keycode = keycode
+        self.state = state
+
+    def get_state(self):
+        return self.state
+
+
+def connect_key_pressed(widget, handler, *user_data):
+    """Attach an ``EventControllerKey`` and call *handler* with a KeyEvent.
+
+    ``handler(widget, event, *user_data)`` — same shape as the old
+    ``key-press-event`` handler. Returns True/EVENT_STOP to stop propagation.
+    """
+
+    controller = Gtk.EventControllerKey()
+    widget.add_controller(controller)
+
+    def _on_key(_ctrl, keyval, keycode, state):
+        event = KeyEvent(keyval, keycode, state)
+        result = handler(widget, event, *user_data)
+        return bool(result)
+
+    controller.connect("key-pressed", _on_key)
+    return controller
 
 
 def is_accel_pressed(keyval, state, *accels):
@@ -488,6 +543,12 @@ gtk_version = (
     Gtk.get_micro_version(),
 )
 
+adw_version = (
+    Adw.get_major_version(),
+    Adw.get_minor_version(),
+    Adw.get_micro_version(),
+)
+
 pygobject_version = gi.version_info
 
 
@@ -575,7 +636,9 @@ def enqueue(songs):
     if songs:
         from quodlibet import app
 
-        app.window.playlist.enqueue(songs)
+        window = app.window
+        if window is not None:
+            window.playlist.enqueue(songs)
 
 
 class ThemeOverrider:

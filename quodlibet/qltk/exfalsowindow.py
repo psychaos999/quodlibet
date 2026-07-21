@@ -7,7 +7,7 @@
 
 import os
 
-from gi.repository import GLib, Gtk, GObject, Pango
+from gi.repository import GLib, Gtk, GObject, Pango, Gio
 from quodlibet.fsn import fsnative
 
 from quodlibet import ngettext, _
@@ -19,7 +19,7 @@ from quodlibet import app
 from quodlibet.qltk.appwindow import AppWindow
 from quodlibet.formats import AudioFileError
 from quodlibet.plugins import PluginManager
-from quodlibet.qltk.delete import trash_files, TrashMenuItem
+from quodlibet.qltk.delete import trash_files
 from quodlibet.qltk.edittags import EditTags
 from quodlibet.qltk.filesel import MainFileSelector
 from quodlibet.qltk.pluginwin import PluginWindow
@@ -31,16 +31,15 @@ from quodlibet.qltk.about import AboutDialog
 from quodlibet.qltk.songsmenu import SongsMenuPluginHandler
 from quodlibet.qltk.x import (
     Align,
-    SeparatorMenuItem,
     ConfigRHPaned,
     SymbolicIconImage,
-    MenuItem,
 )
 from quodlibet.qltk.window import PersistentWindowMixin, Window
 from quodlibet.qltk.msg import CancelRevertSave
 from quodlibet.qltk.notif import StatusBar, TaskController
 from quodlibet.qltk.prefs import PreferencesWindow as QLPreferencesWindow
 from quodlibet.qltk import Icons
+from quodlibet.util import trash as trash_util
 from quodlibet.util.i18n import numeric_phrase
 from quodlibet.util.path import mtime, normalize_path
 from quodlibet.util import connect_obj, connect_destroy, format_int_locale
@@ -80,43 +79,47 @@ class ExFalsoWindow(Window, PersistentWindowMixin, AppWindow):
 
         def prefs_cb(*args):
             window = PreferencesWindow(self)
-            window.show()
+            window.present()
 
         def plugin_window_cb(*args):
             window = PluginWindow(self)
-            window.show()
+            window.present()
 
         def about_cb(*args):
             about = AboutDialog(self, app)
             about.run()
-            # GTK4: destroy() removed - about cleaned up automatically
 
         def update_cb(*args):
             d = UpdateDialog(self)
             d.run()
-            # GTK4: destroy() removed - d cleaned up automatically
 
-        menu = Gtk.PopoverMenu()
+        action_group = Gio.SimpleActionGroup()
+        menu_model = Gio.Menu()
 
-        about_item = MenuItem(_("_About"), Icons.HELP_ABOUT)
-        about_item.connect("activate", about_cb)
-        menu.append(about_item)
+        about_action = Gio.SimpleAction.new("about", None)
+        about_action.connect("activate", about_cb)
+        action_group.add_action(about_action)
+        menu_model.append(_("About"), "appmenu.about")
 
-        check_item = MenuItem(_("_Check for Updates…"), Icons.NETWORK_SERVER)
-        check_item.connect("activate", update_cb)
-        menu.append(check_item)
+        update_action = Gio.SimpleAction.new("check-updates", None)
+        update_action.connect("activate", update_cb)
+        action_group.add_action(update_action)
+        menu_model.append(_("Check for Updates…"), "appmenu.check-updates")
 
-        menu.append(SeparatorMenuItem())
+        tools = Gio.Menu()
+        plugin_action = Gio.SimpleAction.new("plugins", None)
+        plugin_action.connect("activate", plugin_window_cb)
+        action_group.add_action(plugin_action)
+        tools.append(_("Plugins"), "appmenu.plugins")
 
-        plugin_item = MenuItem(_("_Plugins"), Icons.SYSTEM_RUN)
-        plugin_item.connect("activate", plugin_window_cb)
-        menu.append(plugin_item)
+        prefs_action = Gio.SimpleAction.new("preferences", None)
+        prefs_action.connect("activate", prefs_cb)
+        action_group.add_action(prefs_action)
+        tools.append(_("Preferences"), "appmenu.preferences")
+        menu_model.append_section(None, tools)
 
-        pref_item = MenuItem(_("_Preferences"), Icons.PREFERENCES_SYSTEM)
-        pref_item.connect("activate", prefs_cb)
-        menu.append(pref_item)
-
-        menu.show_all()
+        menu = Gtk.PopoverMenu.new_from_model(menu_model)
+        menu.insert_action_group("appmenu", action_group)
 
         menu_button = MenuButton(
             SymbolicIconImage(Icons.OPEN_MENU, Gtk.IconSize.LARGE),
@@ -175,11 +178,6 @@ class ExFalsoWindow(Window, PersistentWindowMixin, AppWindow):
 
         self.get_child().show()
 
-        self.__ag = Gtk.AccelGroup()
-        key, mod = Gtk.accelerator_parse("<Primary>Q")
-        self.__ag.connect(key, mod, 0, lambda *x: self.destroy())
-        self.add_accel_group(self.__ag)
-
         # macOS native menu integration is not currently supported in GTK4;
         # keep a placeholder so set_as_osx_window() has something to pass.
         self._dummy_osx_menu_bar = Gtk.Box()
@@ -220,35 +218,43 @@ class ExFalsoWindow(Window, PersistentWindowMixin, AppWindow):
         return None
 
     def __popup_menu(self, view, fs):
-        # get all songs for the selection
         filenames = [
             normalize_path(f, canonicalise=True) for f in fs.get_selected_paths()
         ]
-        maybe_songs = [self.__library.get(f) for f in filenames]
-        songs = [s for s in maybe_songs if s]
-
-        if songs:
-            menu = self.pm.menu(self.__library, songs)
-            if menu is None:
-                menu = Gtk.PopoverMenu()
-            else:
-                menu.prepend(SeparatorMenuItem())
-        else:
-            menu = Gtk.PopoverMenu()
-
-        b = TrashMenuItem()
-        b.connect("activate", self.__delete, filenames, fs)
-        menu.prepend(b)
-
-        def selection_done_cb(menu):
-            # GTK4: destroy() removed - menu cleaned up automatically
-            pass
-
-        menu.connect("selection-done", selection_done_cb)
-        menu.show_all()
+        songs = [s for f in filenames if (s := self.__library.get(f))]
+        menu = self._compose_file_popup(songs, filenames, fs)
         return view.popup_menu(menu, 0, GLib.CURRENT_TIME)
 
-    def __delete(self, item, paths, fs):
+    def _compose_file_popup(self, songs, filenames, fs):
+        actions = Gio.SimpleActionGroup()
+        model = Gio.Menu()
+
+        trash_action = Gio.SimpleAction.new("trash", None)
+        trash_action.connect("activate", lambda *_a: self.__delete(filenames, fs))
+        actions.add_action(trash_action)
+        top = Gio.Menu()
+        label = _("Move to Trash") if trash_util.use_trash() else _("Delete")
+        top.append(label, "ef.trash")
+        model.append_section(None, top)
+
+        if songs:
+            plugin_item = self.pm.build_menu_item(
+                self.__library,
+                songs,
+                actions,
+                "ef",
+                lambda: self,
+            )
+            if plugin_item is not None:
+                plugins = Gio.Menu()
+                plugins.append_item(plugin_item)
+                model.append_section(None, plugins)
+
+        menu = Gtk.PopoverMenu.new_from_model(model)
+        menu.insert_action_group("ef", actions)
+        return menu
+
+    def __delete(self, paths, fs):
         trash_files(self, paths)
         fs.rescan()
 
@@ -309,7 +315,6 @@ class PreferencesWindow(QLPreferencesWindow):
         # Seems nicer when there's only one page
         self.set_resizable(True)
         self.set_title(_("Ex Falso Preferences"))
-        self.get_child().show_all()
 
     def __destroy(self):
         config.save()

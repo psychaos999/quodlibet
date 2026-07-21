@@ -37,18 +37,12 @@ class Pane(AllTreeView):
 
         column = TreeViewColumnButton(title=self.config.title)
 
-        def on_column_header_clicked(column, event):
+        def on_column_header_clicked(column):
             # In case the column header gets clicked select the "All" entry
-            if (
-                event.button != Gdk.BUTTON_PRIMARY
-                or event.type != Gdk.EventType.BUTTON_PRESS
-            ):
-                return Gdk.EVENT_PROPAGATE
             self.set_selected([])
-            return Gdk.EVENT_STOP
 
         column.set_clickable(True)
-        column.connect("button-press-event", on_column_header_clicked)
+        column.connect("clicked", on_column_header_clicked)
         column.set_use_markup(True)
         column.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
         column.set_fixed_width(60)
@@ -101,12 +95,18 @@ class Pane(AllTreeView):
         self.add_controller(drag_source)
 
         librarian = library.librarian or library
-        self.connect("key-press-event", self.__key_pressed, librarian)
+        qltk.connect_key_pressed(self, self.__key_pressed, librarian)
 
     def __key_pressed(self, view, event, librarian):
         # if ctrl+a is pressed, intercept and select the All entry instead
         if is_accel(event, "<Primary>a"):
             self.set_selected([])
+            return True
+        if is_accel(event, "<Primary>Home"):
+            window = qltk.get_top_parent(self)
+            browser = window.browser if window else None
+            if browser and hasattr(browser, "select_all"):
+                browser.select_all()
             return True
         if is_accel(event, "<Primary>Return", "<Primary>KP_Enter"):
             qltk.enqueue(self.__get_selected_songs(sort=True))

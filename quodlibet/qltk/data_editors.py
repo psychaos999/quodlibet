@@ -13,7 +13,7 @@ from quodlibet import _
 from quodlibet import qltk, util
 from quodlibet.qltk.entry import UndoEntry, ValidatingEntry
 from quodlibet.qltk.views import RCMHintedTreeView, HintedTreeView
-from quodlibet.qltk.x import MenuItem, Button, Align
+from quodlibet.qltk.x import Button, Align
 from quodlibet.qltk import Icons
 from quodlibet.query import Query
 from quodlibet.util.json_data import JSONObjectDict
@@ -46,7 +46,6 @@ class JSONBasedEditor(qltk.UniqueWindow):
 
         self.add(Gtk.Box(spacing=6))
         self.get_child().set_homogeneous(True)
-        self.accels = Gtk.AccelGroup()
 
         # Set up the model for this widget
         self.model = Gtk.ListStore(object)
@@ -76,14 +75,9 @@ class JSONBasedEditor(qltk.UniqueWindow):
         vbox.prepend(frame)
 
         # Add context menu
-        menu = Gtk.PopoverMenu()
-        rem = MenuItem(_("_Remove"), Icons.LIST_REMOVE)
-        connect_obj(rem, "activate", self.__remove, view)
-        menu.append(rem)
-        menu.show_all()
+        menu = qltk.gio_action_popover([(_("_Remove"), lambda: self.__remove(view))])
         view.connect("popup-menu", self.__popup, menu)
-        view.connect("key-press-event", self.__view_key_press)
-        connect_obj(self, "destroy", Gtk.PopoverMenu.destroy, menu)
+        qltk.connect_key_pressed(view, self.__view_key_press)
 
         # New and Close buttons
         bbox = Gtk.Box()
@@ -296,12 +290,8 @@ class TagListEditor(qltk.Window):
         self.__setup_column(view)
 
         # Context menu
-        menu = Gtk.PopoverMenu()
-        remove_item = MenuItem(_("_Remove"), Icons.LIST_REMOVE)
-        menu.append(remove_item)
-        menu.show_all()
+        menu = qltk.gio_action_popover([(_("_Remove"), lambda: self.__remove(view))])
         view.connect("popup-menu", self.__popup, menu)
-        connect_obj(remove_item, "activate", self.__remove, view)
 
         # Add and Remove buttons
         vbbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)

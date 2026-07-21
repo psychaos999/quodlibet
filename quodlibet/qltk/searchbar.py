@@ -44,7 +44,6 @@ class SearchBarBox(Gtk.Box):
         self,
         filename=None,
         completion=None,
-        accel_group=None,
         timeout=DEFAULT_TIMEOUT,
         validator=Query.validator,
         star=None,
@@ -112,9 +111,10 @@ class SearchBarBox(Gtk.Box):
         combo.enable_clear_button()
         self.prepend(combo)
 
-        if accel_group:
-            key, mod = Gtk.accelerator_parse("<Primary>L")
-            accel_group.connect(key, mod, 0, lambda *x: entry.mnemonic_activate(True))
+    def focus_entry(self):
+        """Move focus to the search entry."""
+
+        self._entry.grab_focus()
 
     def set_enabled(self, enabled=True):
         self._entry.set_sensitive(enabled)

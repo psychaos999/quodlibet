@@ -253,11 +253,6 @@ class Browser(Gtk.Box, Filter):
         """
         return False
 
-    accelerators = None
-    """An AccelGroup that is added to / removed from the window where
-    the browser is.
-    """
-
     def menu(self, songs, library, items) -> Gtk.PopoverMenu:
         """After this menu is returned the SongList may modify it further."""
 
